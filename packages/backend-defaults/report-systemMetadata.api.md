@@ -20,6 +20,7 @@ export const actionsServiceFactory: ServiceFactory<
   ActionsService,
 import { BackstageInstance } from '@backstage/backend-plugin-api';
 import { LoggerService } from '@backstage/backend-plugin-api';
+import { Observable } from '@backstage/types';
 import { RootConfigService } from '@backstage/backend-plugin-api';
 import { ServiceFactory } from '@backstage/backend-plugin-api';
 import { SystemMetadataService } from '@backstage/backend-plugin-api';
@@ -33,9 +34,7 @@ export class DefaultSystemMetadataService implements SystemMetadataService {
     config: RootConfigService;
   }): DefaultSystemMetadataService;
   // (undocumented)
-  introspect(): Promise<{
-    instances: BackstageInstance[];
-  }>;
+  instances(): Observable<BackstageInstance[]>;
 }
 
 // @alpha
