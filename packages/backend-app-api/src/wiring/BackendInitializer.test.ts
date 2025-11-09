@@ -32,9 +32,6 @@ const baseFactories = [
   mockServices.lifecycle.factory(),
   mockServices.rootLogger.factory(),
   mockServices.logger.factory(),
-  mockServices.rootConfig.factory(),
-  mockServices.rootHttpRouter.mock().factory,
-  mockServices.rootHealth.factory(),
 ];
 
 function mkNoopFactory(ref: ServiceRef<{}, 'plugin'>) {
@@ -810,10 +807,10 @@ describe('BackendInitializer', () => {
   });
 
   it('should forward errors when multiple plugins fail to start', async () => {
-    const init = new BackendInitializer(baseFactories);
+    const init = new BackendInitializer([]);
     init.add(
       createBackendPlugin({
-        pluginId: 'test1',
+        pluginId: 'test-1',
         register(reg) {
           reg.registerInit({
             deps: {},
@@ -826,7 +823,7 @@ describe('BackendInitializer', () => {
     );
     init.add(
       createBackendPlugin({
-        pluginId: 'test2',
+        pluginId: 'test-2',
         register(reg) {
           reg.registerInit({
             deps: {},
@@ -843,17 +840,17 @@ describe('BackendInitializer', () => {
     await expect(result).rejects.toMatchObject({
       errors: [
         expect.objectContaining({
-          message: "Plugin 'test1' startup failed; caused by Error: NOPE A",
+          message: "Plugin 'test-1' startup failed; caused by Error: NOPE A",
         }),
         expect.objectContaining({
-          message: "Plugin 'test2' startup failed; caused by Error: NOPE B",
+          message: "Plugin 'test-2' startup failed; caused by Error: NOPE B",
         }),
       ],
     });
   });
 
   it('should forward errors when modules fail to start', async () => {
-    const init = new BackendInitializer(baseFactories);
+    const init = new BackendInitializer([]);
     init.add(testPlugin);
     init.add(
       createBackendModule({
@@ -875,7 +872,7 @@ describe('BackendInitializer', () => {
   });
 
   it('should reject duplicate plugins', async () => {
-    const init = new BackendInitializer(baseFactories);
+    const init = new BackendInitializer([]);
     init.add(
       createBackendPlugin({
         pluginId: 'test',
@@ -904,7 +901,7 @@ describe('BackendInitializer', () => {
   });
 
   it('should reject duplicate modules', async () => {
-    const init = new BackendInitializer(baseFactories);
+    const init = new BackendInitializer([]);
     init.add(testPlugin);
     init.add(
       createBackendModule({
@@ -941,9 +938,6 @@ describe('BackendInitializer', () => {
     const init = new BackendInitializer([
       mockServices.rootLifecycle.factory(),
       mockServices.rootLogger.factory(),
-      mockServices.rootHttpRouter.mock().factory,
-      mockServices.rootHealth.factory(),
-      mockServices.rootConfig.factory(),
     ]);
     init.add(testPlugin);
     init.add(
