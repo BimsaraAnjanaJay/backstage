@@ -128,5 +128,26 @@ export const instanceMetadataServiceRef: ServiceRef<
   'singleton'
 >;
 
+// @public (undocumented)
+export interface RootSystemMetadataService {
+  // (undocumented)
+  getInstalledPlugins: () => Promise<
+    ReadonlyArray<RootSystemMetadataServicePluginInfo>
+  >;
+}
+
+// @public (undocumented)
+export interface RootSystemMetadataServicePluginInfo {
+  // (undocumented)
+  readonly pluginId: string;
+}
+
+// @alpha
+export const rootSystemMetadataServiceRef: ServiceRef<
+  RootSystemMetadataService,
+  'root',
+  'singleton'
+>;
+
 // (No @packageDocumentation comment for this package)
 ```

@@ -18,6 +18,10 @@ export type {
   BackendFeatureMeta,
   InstanceMetadataService,
 } from './InstanceMetadataService';
+export type {
+  RootSystemMetadataServicePluginInfo,
+  RootSystemMetadataService,
+} from './RootSystemMetadataService';
 
 export type {
   ActionsRegistryService,
@@ -31,4 +35,5 @@ export {
   actionsRegistryServiceRef,
   actionsServiceRef,
   instanceMetadataServiceRef,
+  rootSystemMetadataServiceRef,
 } from './refs';

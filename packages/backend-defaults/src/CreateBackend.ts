@@ -40,7 +40,6 @@ import {
   actionsServiceFactory,
   instanceMetadataServiceFactory,
 } from '@backstage/backend-defaults/alpha';
-import { rootSystemMetadataServiceFactory } from './entrypoints/rootSystemMetadata';
 
 export const defaultServiceFactories = [
   auditorServiceFactory,
@@ -63,7 +62,6 @@ export const defaultServiceFactories = [
   userInfoServiceFactory,
   urlReaderServiceFactory,
   eventsServiceFactory,
-  rootSystemMetadataServiceFactory,
 
   // alpha services
   actionsRegistryServiceFactory,
