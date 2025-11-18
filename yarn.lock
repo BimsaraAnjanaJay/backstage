@@ -9922,6 +9922,55 @@ __metadata:
   languageName: unknown
   linkType: soft
 
+"@internal/plugin-function-analytics-backend@workspace:plugins/function-analytics-backend":
+  version: 0.0.0-use.local
+  resolution: "@internal/plugin-function-analytics-backend@workspace:plugins/function-analytics-backend"
+  dependencies:
+    "@backstage/backend-defaults": "workspace:^"
+    "@backstage/backend-plugin-api": "workspace:^"
+    "@backstage/backend-test-utils": "workspace:^"
+    "@backstage/cli": "workspace:^"
+    "@backstage/errors": "workspace:^"
+    "@types/express": "npm:^4.17.6"
+    "@types/supertest": "npm:^2.0.8"
+    express: "npm:^4.17.1"
+    express-promise-router: "npm:^4.1.0"
+    node-fetch: "npm:^2.6.7"
+    supertest: "npm:^7.0.0"
+  languageName: unknown
+  linkType: soft
+
+"@internal/plugin-function-analytics@workspace:plugins/function-analytics":
+  version: 0.0.0-use.local
+  resolution: "@internal/plugin-function-analytics@workspace:plugins/function-analytics"
+  dependencies:
+    "@backstage/catalog-model": "workspace:^"
+    "@backstage/cli": "workspace:^"
+    "@backstage/core-components": "workspace:^"
+    "@backstage/core-plugin-api": "workspace:^"
+    "@backstage/plugin-catalog-react": "workspace:^"
+    "@material-ui/core": "npm:^4.12.2"
+    "@material-ui/icons": "npm:^4.11.2"
+    "@material-ui/lab": "npm:^4.0.0-alpha.61"
+    "@testing-library/dom": "npm:^10.0.0"
+    "@testing-library/jest-dom": "npm:^6.0.0"
+    "@testing-library/react": "npm:^16.0.0"
+    "@types/react": "npm:^18.0.0"
+    react: "npm:^18.0.2"
+    react-dom: "npm:^18.0.2"
+    react-router-dom: "npm:^6.3.0"
+    react-use: "npm:^17.2.4"
+  peerDependencies:
+    "@types/react": ^17.0.0 || ^18.0.0
+    react: ^17.0.0 || ^18.0.0
+    react-dom: ^17.0.0 || ^18.0.0
+    react-router-dom: ^6.3.0
+  peerDependenciesMeta:
+    "@types/react":
+      optional: true
+  languageName: unknown
+  linkType: soft
+
 "@internal/plugin-todo-list-backend@workspace:plugins/example-todo-list-backend":
   version: 0.0.0-use.local
   resolution: "@internal/plugin-todo-list-backend@workspace:plugins/example-todo-list-backend"
@@ -10835,7 +10884,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@material-ui/icons@npm:^4.11.3, @material-ui/icons@npm:^4.9.1":
+"@material-ui/icons@npm:^4.11.2, @material-ui/icons@npm:^4.11.3, @material-ui/icons@npm:^4.9.1":
   version: 4.11.3
   resolution: "@material-ui/icons@npm:4.11.3"
   dependencies:

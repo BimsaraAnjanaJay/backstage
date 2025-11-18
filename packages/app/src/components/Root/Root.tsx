@@ -48,6 +48,7 @@ import BuildIcon from '@material-ui/icons/Build';
 import { NotificationsSidebarItem } from '@backstage/plugin-notifications';
 import UpdateIcon from '@material-ui/icons/Update';
 import CategoryIcon from '@material-ui/icons/Category';
+import AssessmentIcon from '@material-ui/icons/Assessment';
 
 const useSidebarLogoStyles = makeStyles({
   root: {
@@ -149,6 +150,11 @@ export const Root = ({ children }: PropsWithChildren<{}>) => (
         <SidebarItem icon={CreateComponentIcon} to="create" text="Create..." />
         {/* End global nav */}
         <SidebarDivider />
+        <SidebarItem
+          icon={AssessmentIcon}
+          to="function-analytics"
+          text="Function Analytics"
+        />
         <SidebarScrollWrapper>
           <SidebarItem
             icon={UpdateIcon}

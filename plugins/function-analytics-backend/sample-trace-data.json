@@ -1,0 +1,88 @@
+{
+  "data": [
+    {
+      "traceID": "trace-001",
+      "spans": [
+        {
+          "spanID": "span-001",
+          "operationName": "getUserProfile",
+          "duration": 50000,
+          "process": {
+            "serviceName": "user-service"
+          },
+          "references": []
+        },
+        {
+          "spanID": "span-002",
+          "operationName": "getUserProfile",
+          "duration": 200000,
+          "process": {
+            "serviceName": "user-service"
+          },
+          "references": [
+            {
+              "refType": "CHILD_OF",
+              "spanID": "span-parent-001"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "traceID": "trace-002",
+      "spans": [
+        {
+          "spanID": "span-003",
+          "operationName": "fetchOrders",
+          "duration": 75000,
+          "process": {
+            "serviceName": "order-service"
+          },
+          "references": [
+            {
+              "refType": "CHILD_OF",
+              "spanID": "span-parent-002"
+            }
+          ]
+        },
+        {
+          "spanID": "span-parent-002",
+          "operationName": "handleRequest",
+          "duration": 100000,
+          "process": {
+            "serviceName": "api-gateway"
+          },
+          "references": []
+        }
+      ]
+    },
+    {
+      "traceID": "trace-003",
+      "spans": [
+        {
+          "spanID": "span-004",
+          "operationName": "validateToken",
+          "duration": 30000,
+          "process": {
+            "serviceName": "auth-service"
+          },
+          "references": [
+            {
+              "refType": "CHILD_OF",
+              "spanID": "span-parent-003"
+            }
+          ]
+        },
+        {
+          "spanID": "span-parent-003",
+          "operationName": "authenticate",
+          "duration": 50000,
+          "process": {
+            "serviceName": "api-gateway"
+          },
+          "references": []
+        }
+      ]
+    }
+  ]
+}
