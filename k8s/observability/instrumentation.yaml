@@ -1,0 +1,208 @@
+apiVersion: opentelemetry.io/v1alpha1
+kind: Instrumentation
+metadata:
+  name: auto-instrumentation
+  namespace: observability
+spec:
+  # Global exporter endpoint - all services send data here
+  exporter:
+    endpoint: http://otel-collector.observability.svc.cluster.local:4318
+  
+  # Propagation format (for distributed tracing context)
+  propagators:
+    - tracecontext
+    - baggage
+    - b3
+  
+  # Sampler configuration (1.0 = 100% sampling)
+  sampler:
+    type: parentbased_traceidratio
+    argument: "1.0"
+  
+  # ==========================================
+  # Node.js Auto-Instrumentation
+  # ==========================================
+  nodejs:
+    image: ghcr.io/open-telemetry/opentelemetry-operator/autoinstrumentation-nodejs:latest
+    env:
+      # Exporter configuration
+      - name: OTEL_TRACES_EXPORTER
+        value: otlp
+      - name: OTEL_METRICS_EXPORTER
+        value: otlp
+      - name: OTEL_LOGS_EXPORTER
+        value: otlp
+      - name: OTEL_EXPORTER_OTLP_PROTOCOL
+        value: http/protobuf
+      - name: OTEL_EXPORTER_OTLP_ENDPOINT
+        value: http://otel-collector.observability.svc.cluster.local:4318
+      
+      # Service configuration
+      - name: OTEL_SERVICE_NAME
+        valueFrom:
+          fieldRef:
+            fieldPath: metadata.labels['app']
+      
+      # Resource attributes
+      - name: OTEL_RESOURCE_ATTRIBUTES
+        value: "service.namespace=$(OTEL_K8S_NAMESPACE),service.version=$(OTEL_K8S_POD_NAME),deployment.environment=production"
+      
+      # Instrumentation configuration
+      - name: OTEL_NODE_ENABLED_INSTRUMENTATIONS
+        value: "http,express,mongodb,redis,grpc,mysql,pg"
+      
+      # Logging
+      - name: OTEL_LOG_LEVEL
+        value: "info"
+      
+      # Span attributes
+      - name: OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT
+        value: "128"
+      - name: OTEL_SPAN_EVENT_COUNT_LIMIT
+        value: "128"
+  
+  # ==========================================
+  # Python Auto-Instrumentation
+  # ==========================================
+  python:
+    image: ghcr.io/open-telemetry/opentelemetry-operator/autoinstrumentation-python:latest
+    env:
+      # Exporter configuration
+      - name: OTEL_TRACES_EXPORTER
+        value: otlp
+      - name: OTEL_METRICS_EXPORTER
+        value: otlp
+      - name: OTEL_LOGS_EXPORTER
+        value: otlp
+      - name: OTEL_EXPORTER_OTLP_PROTOCOL
+        value: http/protobuf
+      - name: OTEL_EXPORTER_OTLP_ENDPOINT
+        value: http://otel-collector.observability.svc.cluster.local:4318
+      
+      # Service configuration
+      - name: OTEL_SERVICE_NAME
+        valueFrom:
+          fieldRef:
+            fieldPath: metadata.labels['app']
+      
+      # Resource attributes
+      - name: OTEL_RESOURCE_ATTRIBUTES
+        value: "service.namespace=$(OTEL_K8S_NAMESPACE),deployment.environment=production"
+      
+      # Python-specific instrumentation
+      - name: OTEL_PYTHON_DISABLED_INSTRUMENTATIONS
+        value: ""
+      
+      # Logging
+      - name: OTEL_LOG_LEVEL
+        value: "info"
+  
+  # ==========================================
+  # Java Auto-Instrumentation
+  # ==========================================
+  java:
+    image: ghcr.io/open-telemetry/opentelemetry-operator/autoinstrumentation-java:latest
+    env:
+      # Exporter configuration
+      - name: OTEL_TRACES_EXPORTER
+        value: otlp
+      - name: OTEL_METRICS_EXPORTER
+        value: otlp
+      - name: OTEL_LOGS_EXPORTER
+        value: otlp
+      - name: OTEL_EXPORTER_OTLP_PROTOCOL
+        value: http/protobuf
+      - name: OTEL_EXPORTER_OTLP_ENDPOINT
+        value: http://otel-collector.observability.svc.cluster.local:4318
+      
+      # Service configuration
+      - name: OTEL_SERVICE_NAME
+        valueFrom:
+          fieldRef:
+            fieldPath: metadata.labels['app']
+      
+      # Resource attributes
+      - name: OTEL_RESOURCE_ATTRIBUTES
+        value: "service.namespace=$(OTEL_K8S_NAMESPACE),deployment.environment=production"
+      
+      # Java-specific configuration
+      - name: OTEL_JAVAAGENT_ENABLED
+        value: "true"
+      
+      # Instrumentation libraries
+      - name: OTEL_INSTRUMENTATION_COMMON_DEFAULT_ENABLED
+        value: "true"
+      
+      # Logging
+      - name: OTEL_LOG_LEVEL
+        value: "info"
+  
+  # ==========================================
+  # Go Auto-Instrumentation (Experimental)
+  # ==========================================
+  go:
+    image: ghcr.io/open-telemetry/opentelemetry-operator/autoinstrumentation-go:latest
+    env:
+      # Exporter configuration
+      - name: OTEL_TRACES_EXPORTER
+        value: otlp
+      - name: OTEL_METRICS_EXPORTER
+        value: otlp
+      - name: OTEL_EXPORTER_OTLP_PROTOCOL
+        value: http/protobuf
+      - name: OTEL_EXPORTER_OTLP_ENDPOINT
+        value: http://otel-collector.observability.svc.cluster.local:4318
+      
+      # Service configuration
+      - name: OTEL_SERVICE_NAME
+        valueFrom:
+          fieldRef:
+            fieldPath: metadata.labels['app']
+      
+      # Resource attributes
+      - name: OTEL_RESOURCE_ATTRIBUTES
+        value: "service.namespace=$(OTEL_K8S_NAMESPACE),deployment.environment=production"
+      
+      # Go-specific configuration
+      - name: OTEL_GO_AUTO_TARGET_EXE
+        value: "/app/main"
+      
+      # Logging
+      - name: OTEL_LOG_LEVEL
+        value: "info"
+  
+  # ==========================================
+  # DotNet Auto-Instrumentation
+  # ==========================================
+  dotnet:
+    image: ghcr.io/open-telemetry/opentelemetry-operator/autoinstrumentation-dotnet:latest
+    env:
+      # Exporter configuration
+      - name: OTEL_TRACES_EXPORTER
+        value: otlp
+      - name: OTEL_METRICS_EXPORTER
+        value: otlp
+      - name: OTEL_LOGS_EXPORTER
+        value: otlp
+      - name: OTEL_EXPORTER_OTLP_PROTOCOL
+        value: http/protobuf
+      - name: OTEL_EXPORTER_OTLP_ENDPOINT
+        value: http://otel-collector.observability.svc.cluster.local:4318
+      
+      # Service configuration
+      - name: OTEL_SERVICE_NAME
+        valueFrom:
+          fieldRef:
+            fieldPath: metadata.labels['app']
+      
+      # Resource attributes
+      - name: OTEL_RESOURCE_ATTRIBUTES
+        value: "service.namespace=$(OTEL_K8S_NAMESPACE),deployment.environment=production"
+      
+      # .NET-specific configuration
+      - name: OTEL_DOTNET_AUTO_ENABLED
+        value: "true"
+      
+      # Logging
+      - name: OTEL_LOG_LEVEL
+        value: "info"

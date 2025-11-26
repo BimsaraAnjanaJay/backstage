@@ -1,0 +1,222 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: observability
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: otel-collector
+  namespace: observability
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: otel-collector
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "namespaces", "nodes"]
+    verbs: ["get", "watch", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: otel-collector
+subjects:
+  - kind: ServiceAccount
+    name: otel-collector
+    namespace: observability
+roleRef:
+  kind: ClusterRole
+  name: otel-collector
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: opentelemetry.io/v1alpha1
+kind: OpenTelemetryCollector
+metadata:
+  name: otel-collector
+  namespace: observability
+spec:
+  mode: deployment
+  replicas: 3
+  serviceAccount: otel-collector
+  
+  # Resource limits for production
+  resources:
+    limits:
+      cpu: 1000m
+      memory: 2Gi
+    requests:
+      cpu: 500m
+      memory: 1Gi
+  
+  # Collector configuration
+  config: |
+    receivers:
+      # OTLP receiver for traces and metrics
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+      
+      # Prometheus receiver for scraping metrics
+      prometheus:
+        config:
+          scrape_configs:
+            - job_name: 'otel-collector'
+              scrape_interval: 10s
+              static_configs:
+                - targets: ['0.0.0.0:8888']
+    
+    processors:
+      # Batch processor to reduce network calls
+      batch:
+        timeout: 10s
+        send_batch_size: 1024
+        send_batch_max_size: 2048
+      
+      # Memory limiter to prevent OOM
+      memory_limiter:
+        check_interval: 1s
+        limit_mib: 1500
+        spike_limit_mib: 512
+      
+      # Resource processor to add/modify attributes
+      resource:
+        attributes:
+          # Add cluster information
+          - key: k8s.cluster.name
+            value: "production"
+            action: insert
+          # Extract service name from k8s labels
+          - key: service.name
+            from_attribute: k8s.pod.labels.app
+            action: upsert
+          # Add namespace
+          - key: service.namespace
+            from_attribute: k8s.namespace.name
+            action: upsert
+      
+      # K8s attributes processor
+      k8sattributes:
+        auth_type: "serviceAccount"
+        passthrough: false
+        filter:
+          node_from_env_var: KUBE_NODE_NAME
+        extract:
+          metadata:
+            - k8s.namespace.name
+            - k8s.deployment.name
+            - k8s.pod.name
+            - k8s.pod.uid
+            - k8s.node.name
+          labels:
+            - tag_name: app
+              key: app
+              from: pod
+            - tag_name: version
+              key: version
+              from: pod
+      
+      # Span processor for trace enrichment
+      span:
+        name:
+          to_attributes:
+            rules:
+              # Extract HTTP method and path
+              - ^\/api\/(?P<api_version>[^\/]+)\/(?P<resource>[^\/]+).*$
+    
+    exporters:
+      # Jaeger exporter for distributed tracing
+      jaeger:
+        endpoint: jaeger-collector.observability.svc.cluster.local:14250
+        tls:
+          insecure: true
+      
+      # Prometheus exporter for metrics
+      prometheus:
+        endpoint: 0.0.0.0:8889
+        namespace: microservice
+        const_labels:
+          cluster: production
+      
+      # Logging exporter for debugging
+      logging:
+        verbosity: detailed
+        sampling_initial: 5
+        sampling_thereafter: 200
+    
+    extensions:
+      # Health check endpoint
+      health_check:
+        endpoint: 0.0.0.0:13133
+      
+      # pprof for profiling
+      pprof:
+        endpoint: 0.0.0.0:1777
+      
+      # zpages for debugging
+      zpages:
+        endpoint: 0.0.0.0:55679
+    
+    service:
+      extensions: [health_check, pprof, zpages]
+      
+      pipelines:
+        # Traces pipeline
+        traces:
+          receivers: [otlp]
+          processors: [memory_limiter, k8sattributes, resource, span, batch]
+          exporters: [jaeger, logging]
+        
+        # Metrics pipeline
+        metrics:
+          receivers: [otlp, prometheus]
+          processors: [memory_limiter, k8sattributes, resource, batch]
+          exporters: [prometheus, logging]
+      
+      telemetry:
+        logs:
+          level: "info"
+        metrics:
+          address: 0.0.0.0:8888
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector
+  namespace: observability
+  labels:
+    app: otel-collector
+spec:
+  ports:
+    # OTLP gRPC receiver
+    - name: otlp-grpc
+      port: 4317
+      targetPort: 4317
+      protocol: TCP
+    # OTLP HTTP receiver
+    - name: otlp-http
+      port: 4318
+      targetPort: 4318
+      protocol: TCP
+    # Prometheus metrics exporter
+    - name: prometheus
+      port: 8889
+      targetPort: 8889
+      protocol: TCP
+    # Health check
+    - name: health
+      port: 13133
+      targetPort: 13133
+      protocol: TCP
+    # Internal metrics
+    - name: metrics
+      port: 8888
+      targetPort: 8888
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: otel-collector.observability
+  type: ClusterIP

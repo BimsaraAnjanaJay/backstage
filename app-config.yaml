@@ -77,8 +77,24 @@ proxy:
         Authorization: Token token=${PAGERDUTY_TOKEN}
     '/function-analytics':
       target: http://localhost:7007/api/function-analytics
+    
+    # Jaeger Query API for distributed tracing
     '/jaeger':
       target: http://localhost:16686
+      # For Kubernetes deployment, use:
+      # target: http://jaeger-query.observability.svc.cluster.local:16686
+      changeOrigin: true
+      pathRewrite:
+        '^/api/proxy/jaeger': ''
+    
+    # Prometheus for metrics
+    '/prometheus':
+      target: http://localhost:9090
+      # For Kubernetes deployment, use:
+      # target: http://prometheus-service.observability.svc.cluster.local:9090
+      changeOrigin: true
+      pathRewrite:
+        '^/api/proxy/prometheus': ''
 
 organization:
   name: My Company
@@ -203,6 +219,18 @@ catalog:
       target: ../../plugins/scaffolder-backend/sample-templates/all-templates.yaml
       rules:
         - allow: [Template]
+    
+    # Instrumented microservices for Function Analytics
+    - type: file
+      target: ../../k8s/catalog/user-service-catalog.yaml
+    - type: file
+      target: ../../k8s/catalog/product-service-catalog.yaml
+    - type: file
+      target: ../../k8s/catalog/order-service-catalog.yaml
+    
+    # Simple Microservice Example - Docker Compose Demo
+    - type: file
+      target: ../../microservices/simple-microservice-example/catalog-info.yaml
 
 scaffolder:
   auditor:
@@ -307,6 +335,38 @@ auth:
         scope: ${AUTH_ATLASSIAN_SCOPES}
     myproxy: {}
     guest: {}
+
+# Kubernetes integration for service discovery
+kubernetes:
+  serviceLocatorMethod:
+    type: 'multiTenant'
+  clusterLocatorMethods:
+    - type: 'config'
+      clusters:
+        # Local development cluster
+        - url: http://localhost:8001
+          name: local-dev
+          authProvider: 'serviceAccount'
+          skipTLSVerify: true
+          skipMetricsLookup: false
+        
+        # Production cluster (uncomment and configure for K8s deployment)
+        # - url: https://kubernetes.default.svc
+        #   name: production
+        #   authProvider: 'serviceAccount'
+        #   serviceAccountToken: ${K8S_SERVICE_ACCOUNT_TOKEN}
+        #   skipTLSVerify: false
+        #   skipMetricsLookup: false
+        #   caData: ${K8S_CA_DATA}
+  
+  # Custom resources to discover
+  customResources:
+    - group: 'opentelemetry.io'
+      apiVersion: 'v1alpha1'
+      plural: 'instrumentations'
+    - group: 'opentelemetry.io'
+      apiVersion: 'v1alpha1'
+      plural: 'opentelemetrycollectors'
 
 permission:
   enabled: true
