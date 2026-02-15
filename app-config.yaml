@@ -79,7 +79,7 @@ proxy:
       target: http://localhost:7007/api/function-analytics
     
     # Jaeger Query API for distributed tracing
-    '/jaeger':
+    '/api/proxy/jaeger':
       target: http://localhost:16686
       # For Kubernetes deployment, use:
       # target: http://jaeger-query.observability.svc.cluster.local:16686
@@ -228,10 +228,6 @@ catalog:
     - type: file
       target: ../../k8s/catalog/order-service-catalog.yaml
     
-    # Simple Microservice Example - Docker Compose Demo
-    - type: file
-      target: ../../microservices/simple-microservice-example/catalog-info.yaml
-
 scaffolder:
   auditor:
     taskParameterMaxLength: 256

@@ -197,4 +197,39 @@ export const useStyles = makeStyles(theme => ({
     height: '20px',
     fontWeight: 'bold',
   },
+  selectMenuPaper: {
+    backgroundColor: theme.palette.background.paper,
+    color: theme.palette.text.primary,
+  },
+  selectMenuList: {
+    backgroundColor: theme.palette.background.paper,
+  },
+  selectSubheader: {
+    backgroundColor: theme.palette.background.default,
+    color: theme.palette.text.secondary,
+    fontWeight: 'bold',
+    lineHeight: '48px',
+    fontSize: '0.9rem',
+    borderBottom: `1px solid ${theme.palette.divider}`,
+  },
+  selectSystemItem: {
+    paddingLeft: theme.spacing(3),
+    backgroundColor: theme.palette.action.hover,
+    fontWeight: 500,
+    '&.Mui-selected': {
+      backgroundColor: theme.palette.action.selected,
+    },
+    '&.Mui-selected:hover': {
+      backgroundColor: theme.palette.action.selected,
+    },
+  },
+  selectServiceItem: {
+    paddingLeft: theme.spacing(6),
+    '&.Mui-selected': {
+      backgroundColor: theme.palette.action.selected,
+    },
+    '&.Mui-selected:hover': {
+      backgroundColor: theme.palette.action.selected,
+    },
+  },
 }));

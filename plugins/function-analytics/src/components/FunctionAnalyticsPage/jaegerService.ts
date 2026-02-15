@@ -23,7 +23,8 @@ import { extractGeneralFunctionName } from './utils';
  */
 export const fetchJaegerServiceMetrics = async (
   serviceName: string,
-  _backend: TracingBackendConfig,
+  backend: TracingBackendConfig,
+  timeRange: string,
   fetchApi?: { fetch: typeof fetch }
 ): Promise<ServiceMetrics> => {
   // eslint-disable-next-line no-console
@@ -32,13 +33,23 @@ export const fetchJaegerServiceMetrics = async (
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   
   const endTime = Date.now() * 1000; // microseconds
-  const startTime = endTime - (24 * 60 * 60 * 1000 * 1000); // 24 hours ago
+  const timeRangeToMicros: Record<string, number> = {
+    '5m': 5 * 60 * 1000 * 1000,
+    '1h': 60 * 60 * 1000 * 1000,
+    '24h': 24 * 60 * 60 * 1000 * 1000,
+    '7d': 7 * 24 * 60 * 60 * 1000 * 1000,
+  };
+  const rangeMicros = timeRangeToMicros[timeRange] ?? timeRangeToMicros['1h'];
+  const startTime = endTime - rangeMicros;
   
   // eslint-disable-next-line no-console
   console.log(`🕐 Time range: ${new Date(startTime/1000).toISOString()} to ${new Date(endTime/1000).toISOString()}`);
 
   try {
-    const tracesUrl = `/api/proxy/jaeger/api/traces?service=${encodeURIComponent(serviceName)}&start=${startTime}&end=${endTime}&limit=200`;
+    const baseUrl = backend.endpoint && backend.endpoint !== 'http://localhost:16686'
+      ? backend.endpoint.replace(/\/$/, '')
+      : '/api/proxy/jaeger';
+    const tracesUrl = `${baseUrl}/api/traces?service=${encodeURIComponent(serviceName)}&start=${startTime}&end=${endTime}&limit=200`;
     // eslint-disable-next-line no-console
     console.log(`📡 Fetching from: ${tracesUrl}`);
     
@@ -62,7 +73,37 @@ export const fetchJaegerServiceMetrics = async (
       };
     }
 
-    const tracesData = await tracesResponse.json();
+    // Check if response is actually JSON
+    const contentType = tracesResponse.headers.get('content-type');
+    if (!contentType || !contentType.includes('application/json')) {
+      // eslint-disable-next-line no-console
+      console.warn(`❌ Service ${serviceName} returned non-JSON response (${contentType}). Service may not exist in Jaeger.`);
+      return {
+        serviceName,
+        totalCalls: 0,
+        avgLatency: 0,
+        errorRate: 0,
+        functions: [],
+        source: 'auto',
+      };
+    }
+
+    let tracesData;
+    try {
+      tracesData = await tracesResponse.json();
+    } catch (jsonError) {
+      // eslint-disable-next-line no-console
+      console.error(`❌ Failed to parse JSON for service ${serviceName}:`, jsonError);
+      return {
+        serviceName,
+        totalCalls: 0,
+        avgLatency: 0,
+        errorRate: 0,
+        functions: [],
+        source: 'auto',
+      };
+    }
+
     const traces = tracesData.data || [];
     // eslint-disable-next-line no-console
     console.log(`🔢 Found ${traces.length} traces for service: ${serviceName}`);

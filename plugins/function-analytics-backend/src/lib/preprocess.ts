@@ -48,7 +48,7 @@ export function preprocessTraces(rawTraces: any[]): CleanedCall[] {
     // Process each span
     for (const span of trace.spans) {
       const operationName = span.operationName;
-      const calleeService = span.process?.serviceName || 'unknown';
+      const calleeService = trace.processes?.[span.processID]?.serviceName || 'unknown';
       const duration = span.duration || 0;
 
       // Skip noise operations
@@ -67,8 +67,8 @@ export function preprocessTraces(rawTraces: any[]): CleanedCall[] {
         for (const ref of span.references) {
           if (ref.refType === 'CHILD_OF' || ref.refType === 'FOLLOWS_FROM') {
             const parentSpan = spanMap.get(ref.spanID);
-            if (parentSpan && parentSpan.process?.serviceName) {
-              callerService = parentSpan.process.serviceName;
+            if (parentSpan && trace.processes?.[parentSpan.processID]?.serviceName) {
+              callerService = trace.processes[parentSpan.processID].serviceName;
               break;
             }
           }

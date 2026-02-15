@@ -29,9 +29,10 @@ import { fetchJaegerServiceMetrics } from './jaegerService';
 const fetchServiceMetricsFromBackend = async (
   serviceName: string,
   backend: TracingBackendConfig,
+  timeRange: string,
   fetchApi: { fetch: typeof fetch }
 ): Promise<ServiceMetrics> => {
-  return fetchJaegerServiceMetrics(serviceName, backend, fetchApi);
+  return fetchJaegerServiceMetrics(serviceName, backend, timeRange, fetchApi);
 };
 
 /**
@@ -42,6 +43,7 @@ export const fetchHybridServiceMetrics = async (
   catalogServices: CatalogServiceConfig[],
   manualServices: ManualServiceConfig[],
   defaultBackend: TracingBackendConfig,
+  timeRange: string,
   fetchApi: { fetch: typeof fetch }
 ): Promise<HybridServiceConfig[]> => {
   const hybridConfigs: HybridServiceConfig[] = [];
@@ -56,6 +58,7 @@ export const fetchHybridServiceMetrics = async (
       const serviceMetrics = await fetchServiceMetricsFromBackend(
         catalogService.jaegerServiceName || catalogService.serviceName,
         backend,
+        timeRange,
         fetchApi
       );
 
@@ -93,6 +96,7 @@ export const fetchHybridServiceMetrics = async (
       const serviceMetrics = await fetchServiceMetricsFromBackend(
         manualService.jaegerServiceName || manualService.serviceName,
         manualService.tracingBackend,
+        timeRange,
         fetchApi
       );
 

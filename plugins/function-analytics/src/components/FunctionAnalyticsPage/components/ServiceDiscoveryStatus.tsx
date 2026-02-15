@@ -82,7 +82,7 @@ export const ServiceDiscoveryStatus = ({
               <Typography variant="body2">Manual Services: {manualServiceCount}</Typography>
             </Box>
           </Grid>
-          <Grid item xs={12} sm={4}>
+          {/* <Grid item xs={12} sm={4}>
             <Box className={`${classes.connectionStatus} ${
               allServices.some(s => s.connectionStatus === 'connected') 
                 ? classes.connected 
@@ -96,7 +96,7 @@ export const ServiceDiscoveryStatus = ({
                 {allServices.filter(s => s.connectionStatus === 'connected').length} Connected
               </Typography>
             </Box>
-          </Grid>
+          </Grid> */}
         </Grid>
 
         {allServices.length === 0 && (
