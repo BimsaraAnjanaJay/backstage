@@ -86,7 +86,11 @@ interface TraceViewerProps {
   repoName?: string;
 }
 
-export const TraceViewer = ({ serviceName, timeRange, repoName }: TraceViewerProps) => {
+export const TraceViewer = ({
+  serviceName,
+  timeRange,
+  repoName,
+}: TraceViewerProps) => {
   const classes = useStyles();
   const fetchApi = useApi(fetchApiRef);
   const [traces, setTraces] = useState<Trace[]>([]);
@@ -137,7 +141,7 @@ export const TraceViewer = ({ serviceName, timeRange, repoName }: TraceViewerPro
 
       // Check if response is actually JSON
       const contentType = response.headers.get('content-type');
-      
+
       if (!contentType || !contentType.includes('application/json')) {
         setTraces([]);
         setLoading(false);
@@ -172,11 +176,14 @@ export const TraceViewer = ({ serviceName, timeRange, repoName }: TraceViewerPro
 
     setAutoStarting(true);
     try {
-      const response = await fetchApi.fetch('/api/function-analytics/service/start-and-trace', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ serviceName, repoName }),
-      });
+      const response = await fetchApi.fetch(
+        '/api/proxy/function-analytics/service/start-and-trace',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ serviceName, repoName }),
+        },
+      );
 
       if (response.ok) {
         // Refresh available services and traces
@@ -193,7 +200,7 @@ export const TraceViewer = ({ serviceName, timeRange, repoName }: TraceViewerPro
   const checkAndStartService = useCallback(async () => {
     // First, check if service already has traces
     const traceCount = await fetchTraces();
-    
+
     // If no traces found and service not in Jaeger, try to auto-start
     if (traceCount === 0 && !availableServices.includes(serviceName)) {
       await autoStartService();
@@ -226,30 +233,46 @@ export const TraceViewer = ({ serviceName, timeRange, repoName }: TraceViewerPro
     return `${(microseconds / 1000000).toFixed(2)}s`;
   };
 
-  const getTagValue = (tags: Array<{ key: string; value: any }>, key: string): any => {
+  const getTagValue = (
+    tags: Array<{ key: string; value: any }>,
+    key: string,
+  ): any => {
     const tag = tags.find(t => t.key === key);
     return tag ? tag.value : null;
   };
 
   const isErrorSpan = (span: Span): boolean => {
-    return getTagValue(span.tags, 'error') === true || getTagValue(span.tags, 'http.status_code') >= 400;
+    return (
+      getTagValue(span.tags, 'error') === true ||
+      getTagValue(span.tags, 'http.status_code') >= 400
+    );
   };
 
   if (loading || autoStarting) {
     return (
       <Box p={3}>
         <LinearProgress />
-        <Typography variant="body2" color="textSecondary" style={{ marginTop: 16 }}>
-          {autoStarting 
+        <Typography
+          variant="body2"
+          color="textSecondary"
+          style={{ marginTop: 16 }}
+        >
+          {autoStarting
             ? `🚀 Starting ${serviceName} and generating traces... This may take 15-20 seconds.`
             : `Loading traces for ${serviceName}...`}
         </Typography>
         {autoStarting && (
-          <Typography variant="caption" color="textSecondary" style={{ marginTop: 8, display: 'block' }}>
-            • Starting Docker containers<br/>
-            • Waiting for services to initialize<br/>
-            • Generating 20 sample requests<br/>
-            • Collecting traces from Jaeger
+          <Typography
+            variant="caption"
+            color="textSecondary"
+            style={{ marginTop: 8, display: 'block' }}
+          >
+            • Starting Docker containers
+            <br />
+            • Waiting for services to initialize
+            <br />
+            • Generating 20 sample requests
+            <br />• Collecting traces from Jaeger
           </Typography>
         )}
       </Box>
@@ -273,7 +296,7 @@ export const TraceViewer = ({ serviceName, timeRange, repoName }: TraceViewerPro
           <Typography variant="h6" gutterBottom>
             No traces found for "{serviceName}"
           </Typography>
-          
+
           {availableServices.length > 0 && (
             <Box mb={2} p={2} bgcolor="#f0f7ff" borderRadius={1}>
               <Typography variant="body2" gutterBottom>
@@ -284,7 +307,14 @@ export const TraceViewer = ({ serviceName, timeRange, repoName }: TraceViewerPro
                   <li key={svc}>
                     <Typography variant="body2" component="span">
                       <code>{svc}</code>
-                      {svc === serviceName && <Chip label="Selected" size="small" color="primary" style={{ marginLeft: 8 }} />}
+                      {svc === serviceName && (
+                        <Chip
+                          label="Selected"
+                          size="small"
+                          color="primary"
+                          style={{ marginLeft: 8 }}
+                        />
+                      )}
                     </Typography>
                   </li>
                 ))}
@@ -298,23 +328,27 @@ export const TraceViewer = ({ serviceName, timeRange, repoName }: TraceViewerPro
           <Box component="ul" pl={2}>
             <li>
               <Typography variant="body2">
-                <strong>Service name mismatch</strong> - Your service might be sending traces with a different name. 
-                Check the OTEL_SERVICE_NAME environment variable in your service.
+                <strong>Service name mismatch</strong> - Your service might be
+                sending traces with a different name. Check the
+                OTEL_SERVICE_NAME environment variable in your service.
               </Typography>
             </li>
             <li>
               <Typography variant="body2">
-                <strong>Service hasn't generated traces yet</strong> - Make some requests to the service to generate traces
+                <strong>Service hasn't generated traces yet</strong> - Make some
+                requests to the service to generate traces
               </Typography>
             </li>
             <li>
               <Typography variant="body2">
-                <strong>OpenTelemetry not configured</strong> - Your service needs OpenTelemetry instrumentation to send traces
+                <strong>OpenTelemetry not configured</strong> - Your service
+                needs OpenTelemetry instrumentation to send traces
               </Typography>
             </li>
             <li>
               <Typography variant="body2">
-                <strong>Wrong time range</strong> - Try selecting a longer time range (24h or 7d)
+                <strong>Wrong time range</strong> - Try selecting a longer time
+                range (24h or 7d)
               </Typography>
             </li>
           </Box>
@@ -322,10 +356,26 @@ export const TraceViewer = ({ serviceName, timeRange, repoName }: TraceViewerPro
             <Typography variant="body2">
               <strong>Troubleshooting:</strong>
             </Typography>
-            <Box component="code" display="block" bgcolor="#f5f5f5" p={1} mt={1}>
-              1. Check Jaeger UI: <Link href="http://localhost:16686" target="_blank" rel="noopener">http://localhost:16686</Link><br/>
-              2. Verify service logs for OpenTelemetry/tracing errors<br/>
-              3. Check service's OTEL_EXPORTER_OTLP_ENDPOINT is set to http://localhost:4318
+            <Box
+              component="code"
+              display="block"
+              bgcolor="#f5f5f5"
+              p={1}
+              mt={1}
+            >
+              1. Check Jaeger UI:{' '}
+              <Link
+                href="http://localhost:16686"
+                target="_blank"
+                rel="noopener"
+              >
+                http://localhost:16686
+              </Link>
+              <br />
+              2. Verify service logs for OpenTelemetry/tracing errors
+              <br />
+              3. Check service's OTEL_EXPORTER_OTLP_ENDPOINT is set to
+              http://localhost:4318
             </Box>
           </Box>
         </Alert>
@@ -335,12 +385,21 @@ export const TraceViewer = ({ serviceName, timeRange, repoName }: TraceViewerPro
 
   return (
     <Box>
-      <Box display="flex" justifyContent="space-between" alignItems="center" mb={2} p={2}>
+      <Box
+        display="flex"
+        justifyContent="space-between"
+        alignItems="center"
+        mb={2}
+        p={2}
+      >
         <Typography variant="h6">
-          Found {traces.length} trace{traces.length !== 1 ? 's' : ''} for {serviceName}
+          Found {traces.length} trace{traces.length !== 1 ? 's' : ''} for{' '}
+          {serviceName}
         </Typography>
         <Link
-          href={`http://localhost:16686/search?service=${encodeURIComponent(serviceName)}`}
+          href={`http://localhost:16686/search?service=${encodeURIComponent(
+            serviceName,
+          )}`}
           target="_blank"
           rel="noopener noreferrer"
         >
@@ -365,7 +424,9 @@ export const TraceViewer = ({ serviceName, timeRange, repoName }: TraceViewerPro
           </TableHead>
           <TableBody>
             {traces.map(trace => {
-              const totalDuration = Math.max(...trace.spans.map(s => s.duration));
+              const totalDuration = Math.max(
+                ...trace.spans.map(s => s.duration),
+              );
               const spanCount = trace.spans.length;
               const startTime = Math.min(...trace.spans.map(s => s.startTime));
               const isExpanded = expandedTraces.has(trace.traceID);
@@ -384,7 +445,10 @@ export const TraceViewer = ({ serviceName, timeRange, repoName }: TraceViewerPro
                       </IconButton>
                     </TableCell>
                     <TableCell>
-                      <Typography variant="body2" style={{ fontFamily: 'monospace' }}>
+                      <Typography
+                        variant="body2"
+                        style={{ fontFamily: 'monospace' }}
+                      >
                         {trace.traceID.substring(0, 16)}...
                       </Typography>
                     </TableCell>
@@ -393,7 +457,9 @@ export const TraceViewer = ({ serviceName, timeRange, repoName }: TraceViewerPro
                     </TableCell>
                     <TableCell>
                       <Box>
-                        <Typography variant="body2">{formatDuration(totalDuration)}</Typography>
+                        <Typography variant="body2">
+                          {formatDuration(totalDuration)}
+                        </Typography>
                         <LinearProgress
                           variant="determinate"
                           value={100}
@@ -405,7 +471,9 @@ export const TraceViewer = ({ serviceName, timeRange, repoName }: TraceViewerPro
                       <Chip
                         label={hasError ? 'Error' : 'Success'}
                         size="small"
-                        className={hasError ? classes.errorChip : classes.successChip}
+                        className={
+                          hasError ? classes.errorChip : classes.successChip
+                        }
                       />
                     </TableCell>
                     <TableCell>
@@ -417,7 +485,10 @@ export const TraceViewer = ({ serviceName, timeRange, repoName }: TraceViewerPro
 
                   {/* Expanded span details */}
                   <TableRow>
-                    <TableCell colSpan={6} style={{ paddingBottom: 0, paddingTop: 0 }}>
+                    <TableCell
+                      colSpan={6}
+                      style={{ paddingBottom: 0, paddingTop: 0 }}
+                    >
                       <Collapse in={isExpanded} timeout="auto" unmountOnExit>
                         <Box margin={2}>
                           <Typography variant="h6" gutterBottom>
@@ -435,14 +506,27 @@ export const TraceViewer = ({ serviceName, timeRange, repoName }: TraceViewerPro
                             </TableHead>
                             <TableBody>
                               {trace.spans.map(span => {
-                                const process = trace.processes[span.processID] || Object.values(trace.processes)[0];
-                                const httpMethod = getTagValue(span.tags, 'http.method');
-                                const httpStatus = getTagValue(span.tags, 'http.status_code');
+                                const process =
+                                  trace.processes[span.processID] ||
+                                  Object.values(trace.processes)[0];
+                                const httpMethod = getTagValue(
+                                  span.tags,
+                                  'http.method',
+                                );
+                                const httpStatus = getTagValue(
+                                  span.tags,
+                                  'http.status_code',
+                                );
 
                                 return (
-                                  <TableRow key={span.spanID} className={classes.spanRow}>
+                                  <TableRow
+                                    key={span.spanID}
+                                    className={classes.spanRow}
+                                  >
                                     <TableCell>
-                                      <Typography variant="body2">{span.operationName}</Typography>
+                                      <Typography variant="body2">
+                                        {span.operationName}
+                                      </Typography>
                                       {httpMethod && (
                                         <Chip
                                           label={httpMethod}
@@ -463,7 +547,10 @@ export const TraceViewer = ({ serviceName, timeRange, repoName }: TraceViewerPro
                                         </Typography>
                                         <LinearProgress
                                           variant="determinate"
-                                          value={(span.duration / totalDuration) * 100}
+                                          value={
+                                            (span.duration / totalDuration) *
+                                            100
+                                          }
                                           className={classes.durationBar}
                                         />
                                       </Box>
@@ -474,15 +561,27 @@ export const TraceViewer = ({ serviceName, timeRange, repoName }: TraceViewerPro
                                           label={httpStatus}
                                           size="small"
                                           className={
-                                            httpStatus >= 400 ? classes.errorChip : classes.successChip
+                                            httpStatus >= 400
+                                              ? classes.errorChip
+                                              : classes.successChip
                                           }
                                         />
                                       )}
                                     </TableCell>
                                     <TableCell>
-                                      <Box display="flex" style={{ gap: 4, flexWrap: 'wrap' }}>
+                                      <Box
+                                        display="flex"
+                                        style={{ gap: 4, flexWrap: 'wrap' }}
+                                      >
                                         {span.tags
-                                          .filter(t => !['http.method', 'http.status_code', 'span.kind'].includes(t.key))
+                                          .filter(
+                                            t =>
+                                              ![
+                                                'http.method',
+                                                'http.status_code',
+                                                'span.kind',
+                                              ].includes(t.key),
+                                          )
                                           .slice(0, 3)
                                           .map(tag => (
                                             <Chip

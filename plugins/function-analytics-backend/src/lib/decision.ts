@@ -17,23 +17,29 @@
 import { FunctionAnalysis, RelocationResult } from './types';
 
 /**
- * Decision threshold: function is misplaced if dominant external caller
- * represents at least 60% of calls
+ * Decision threshold: function is misplaced if external calls
+ * represents at least 65% of total calls (as per Phase 4)
  */
-const DOMINANT_THRESHOLD = 0.60;
+const DOMINANT_THRESHOLD = 0.65;
+
+/**
+ * Confidence margin to avoid minor/fluctuating movements (5%)
+ */
+const CONFIDENCE_MARGIN = 0.05;
 
 /**
  * Applies decision logic to determine which functions should be relocated
- * 
- * Decision Rules:
- * - A function is "misplaced" if:
- *   1. externalCalls > internalCalls
- *   2. dominantPercent >= 0.60
- * 
+ *
+ * Decision Rules (Methodology Phase 4):
+ * - Step 1: externalCalls >= 65% total calls
+ * - Step 2: dominantCount / totalCalls > (internalCalls / totalCalls) + 5%
+ *
  * @param list - Array of function analysis results
  * @returns Array of relocation recommendations
  */
-export function applyDecisionLogic(list: FunctionAnalysis[]): RelocationResult[] {
+export function applyDecisionLogic(
+  list: FunctionAnalysis[],
+): RelocationResult[] {
   const results: RelocationResult[] = [];
 
   for (const analysis of list) {
@@ -48,10 +54,18 @@ export function applyDecisionLogic(list: FunctionAnalysis[]): RelocationResult[]
       avgExternalLatency,
     } = analysis;
 
+    const totalCalls = internalCalls + externalCalls;
+    const internalPercent = totalCalls > 0 ? internalCalls / totalCalls : 0;
+    const externalPercent = totalCalls > 0 ? externalCalls / totalCalls : 0;
+
+    // Step 1 check
+    const meetsThreshold = externalPercent >= DOMINANT_THRESHOLD;
+
+    // Step 2 check: dominant count vs internal count + margin
+    const meetsMargin = dominantPercent > internalPercent + CONFIDENCE_MARGIN;
+
     // Determine if function should be relocated
-    const isMisplaced = 
-      externalCalls > internalCalls && 
-      dominantPercent >= DOMINANT_THRESHOLD;
+    const isMisplaced = meetsThreshold && meetsMargin;
 
     // Determine suggested service
     let suggestedService: string | null = null;
@@ -59,7 +73,7 @@ export function applyDecisionLogic(list: FunctionAnalysis[]): RelocationResult[]
 
     if (isMisplaced) {
       // Check for circular dependency risk
-      if (dominantCaller === currentService) {
+      if (dominantCaller === currentService || dominantCaller === 'external') {
         recommendation = 'review';
         suggestedService = null;
       } else {
@@ -71,7 +85,7 @@ export function applyDecisionLogic(list: FunctionAnalysis[]): RelocationResult[]
     // Calculate predicted latency improvement
     // Simple model: external calls become internal if relocated
     // Improvement = (avgExternalLatency - avgInternalLatency) * externalCalls
-    const predictedLatencyImprovement = 
+    const predictedLatencyImprovement =
       (avgExternalLatency - avgInternalLatency) * externalCalls;
 
     results.push({
@@ -82,13 +96,14 @@ export function applyDecisionLogic(list: FunctionAnalysis[]): RelocationResult[]
       externalCalls,
       dominantCaller,
       dominantPercent: Math.round(dominantPercent * 100) / 100, // Round to 2 decimals
-      predictedLatencyImprovement: Math.round(predictedLatencyImprovement * 100) / 100,
+      predictedLatencyImprovement:
+        Math.round(predictedLatencyImprovement * 100) / 100,
       recommendation,
     });
   }
 
   // Sort by predicted improvement (highest first)
-  return results.sort((a, b) => 
-    b.predictedLatencyImprovement - a.predictedLatencyImprovement
+  return results.sort(
+    (a, b) => b.predictedLatencyImprovement - a.predictedLatencyImprovement,
   );
 }

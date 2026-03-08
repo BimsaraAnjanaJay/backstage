@@ -72,9 +72,15 @@ import {
 } from './types';
 
 // Import services and utilities
-import { getCatalogInstrumentedServices, getDefaultTracingBackends } from './catalogService';
+import {
+  getCatalogInstrumentedServices,
+  getDefaultTracingBackends,
+} from './catalogService';
 import { fetchHybridServiceMetrics } from './dataFetcher';
-import { analyzeMicroserviceArchitecture, analyzeFunctionPlacement } from './analysisEngine';
+import {
+  analyzeMicroserviceArchitecture,
+  analyzeFunctionPlacement,
+} from './analysisEngine';
 import { useStyles } from './styles';
 
 // Import components
@@ -93,7 +99,7 @@ import { TraceViewer } from '../TraceViewer';
 const getRowClassName = (
   securityRisk: 'HIGH' | 'MEDIUM' | 'LOW',
   shouldRelocate: boolean,
-  classes: any
+  classes: any,
 ): string => {
   if (securityRisk === 'HIGH') return classes.misplacedHighRisk;
   if (securityRisk === 'MEDIUM') return classes.misplacedMediumRisk;
@@ -105,7 +111,7 @@ const getRowClassName = (
  * Helper function to determine chip color based on risk level
  */
 const getChipColor = (
-  securityRisk: 'HIGH' | 'MEDIUM' | 'LOW'
+  securityRisk: 'HIGH' | 'MEDIUM' | 'LOW',
 ): 'primary' | 'secondary' | 'default' => {
   if (securityRisk === 'HIGH') return 'secondary';
   if (securityRisk === 'MEDIUM') return 'default';
@@ -120,30 +126,38 @@ export const FunctionAnalyticsPage = () => {
   const classes = useStyles();
   const catalogApi = useApi(catalogApiRef);
   const fetchApi = useApi(fetchApiRef);
-  
+
   // Plugin configuration state
   const [pluginMode, setPluginMode] = useState<PluginMode>({
     mode: 'hybrid',
     description: 'Auto-discover from catalog + manual configuration',
   });
-  
+
   // Service configuration state
-  const [catalogServices, setCatalogServices] = useState<CatalogServiceConfig[]>([]);
-  const [manualServices, setManualServices] = useState<ManualServiceConfig[]>([]);
-  const [tracingBackends, setTracingBackends] = useState<TracingBackendConfig[]>(getDefaultTracingBackends());
-  const [selectedBackend, setSelectedBackend] = useState<TracingBackendConfig>(getDefaultTracingBackends()[0]);
-  
+  const [catalogServices, setCatalogServices] = useState<
+    CatalogServiceConfig[]
+  >([]);
+  const [manualServices, setManualServices] = useState<ManualServiceConfig[]>(
+    [],
+  );
+  const [tracingBackends, setTracingBackends] = useState<
+    TracingBackendConfig[]
+  >(getDefaultTracingBackends());
+  const [selectedBackend, setSelectedBackend] = useState<TracingBackendConfig>(
+    getDefaultTracingBackends()[0],
+  );
+
   // Data state
   const [hybridConfigs, setHybridConfigs] = useState<HybridServiceConfig[]>([]);
   const [selectedService, setSelectedService] = useState<string>('all');
   const [timeRange, setTimeRange] = useState('1h');
   const [tabValue, setTabValue] = useState(0);
-  
+
   // Loading and error states
   const [loading, setLoading] = useState(true);
   const [configLoading, setConfigLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  
+
   // UI state
   const [showConfigDialog, setShowConfigDialog] = useState(false);
   const [showAddServiceDialog, setShowAddServiceDialog] = useState(false);
@@ -173,22 +187,28 @@ export const FunctionAnalyticsPage = () => {
       try {
         const catalogSvcs = await getCatalogInstrumentedServices(catalogApi);
         setCatalogServices(catalogSvcs);
-        
-        const savedManualServices = localStorage.getItem('function-analytics-manual-services');
+
+        const savedManualServices = localStorage.getItem(
+          'function-analytics-manual-services',
+        );
         if (savedManualServices) {
           setManualServices(JSON.parse(savedManualServices));
         }
-        
-        const savedBackends = localStorage.getItem('function-analytics-backends');
+
+        const savedBackends = localStorage.getItem(
+          'function-analytics-backends',
+        );
         if (savedBackends) {
           const backends = JSON.parse(savedBackends);
           setTracingBackends(backends);
-          const activeBackend = backends.find((b: TracingBackendConfig) => b.enabled);
+          const activeBackend = backends.find(
+            (b: TracingBackendConfig) => b.enabled,
+          );
           if (activeBackend) {
             setSelectedBackend(activeBackend);
           }
         }
-        
+
         if (catalogSvcs.length > 0) {
           setPluginMode({
             mode: 'hybrid',
@@ -197,7 +217,8 @@ export const FunctionAnalyticsPage = () => {
         } else {
           setPluginMode({
             mode: 'manual-only',
-            description: 'No catalog services found - manual configuration required',
+            description:
+              'No catalog services found - manual configuration required',
           });
         }
       } catch (err) {
@@ -216,44 +237,61 @@ export const FunctionAnalyticsPage = () => {
   useEffect(() => {
     const fetchData = async () => {
       if (configLoading) return;
-      
+
       setLoading(true);
       setError(null);
-      
+
       try {
         const configs = await fetchHybridServiceMetrics(
           catalogServices,
           manualServices,
           selectedBackend,
           timeRange,
-          fetchApi
+          fetchApi,
         );
-        
+
         setHybridConfigs(configs);
-        
+
         if (configs.length === 0) {
-          setError('No services configured or no trace data available. Check Jaeger connection and service instrumentation.');
+          setError(
+            'No services configured or no trace data available. Check Jaeger connection and service instrumentation.',
+          );
         }
       } catch (err) {
         // eslint-disable-next-line no-console
         console.error('Error fetching hybrid metrics:', err);
-        setError(err instanceof Error ? err.message : 'Failed to fetch metrics');
+        setError(
+          err instanceof Error ? err.message : 'Failed to fetch metrics',
+        );
       } finally {
         setLoading(false);
       }
     };
 
     fetchData();
-  }, [catalogServices, manualServices, selectedBackend, timeRange, configLoading, fetchApi]);
+  }, [
+    catalogServices,
+    manualServices,
+    selectedBackend,
+    timeRange,
+    configLoading,
+    fetchApi,
+  ]);
 
   // Save manual services to localStorage
   useEffect(() => {
-    localStorage.setItem('function-analytics-manual-services', JSON.stringify(manualServices));
+    localStorage.setItem(
+      'function-analytics-manual-services',
+      JSON.stringify(manualServices),
+    );
   }, [manualServices]);
 
   // Save backends to localStorage
   useEffect(() => {
-    localStorage.setItem('function-analytics-backends', JSON.stringify(tracingBackends));
+    localStorage.setItem(
+      'function-analytics-backends',
+      JSON.stringify(tracingBackends),
+    );
   }, [tracingBackends]);
 
   const handleTabChange = (_: React.ChangeEvent<{}>, newValue: number) => {
@@ -280,7 +318,7 @@ export const FunctionAnalyticsPage = () => {
         manualServices,
         selectedBackend,
         timeRange,
-        fetchApi
+        fetchApi,
       );
       setHybridConfigs(configs);
       setError(null);
@@ -302,20 +340,39 @@ export const FunctionAnalyticsPage = () => {
       // eslint-disable-next-line no-console
       console.log('✅ Jaeger services:', data);
       // eslint-disable-next-line no-alert
-      alert(`Jaeger connection successful! Found ${data.data?.length || 0} services.`);
+      alert(
+        `Jaeger connection successful! Found ${
+          data.data?.length || 0
+        } services.`,
+      );
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error('❌ Jaeger connection failed:', err);
       // eslint-disable-next-line no-alert
-      alert('Jaeger connection failed. Check if Jaeger is running on localhost:16686');
+      alert(
+        'Jaeger connection failed. Check if Jaeger is running on localhost:16686',
+      );
     }
   };
 
   const getServiceRepoName = (service: HybridServiceConfig): string => {
     if (service.source === 'catalog' && 'entity' in service.config) {
-      const repoSlug = service.config.entity.metadata.annotations?.['github.com/project-slug'];
+      const repoSlug =
+        service.config.entity.metadata.annotations?.['github.com/project-slug'];
       if (repoSlug) {
         return repoSlug.split('/').pop()?.replace('.git', '') || '';
+      }
+    }
+    return '';
+  };
+
+  const getServiceGitHubUrl = (service: HybridServiceConfig): string => {
+    if (service.source === 'catalog' && 'entity' in service.config) {
+      const repoSlug =
+        service.config.entity.metadata.annotations?.['github.com/project-slug'];
+      if (repoSlug) {
+        // Construct GitHub URL from project slug (e.g., "owner/repo" -> "https://github.com/owner/repo.git")
+        return `https://github.com/${repoSlug}.git`;
       }
     }
     return '';
@@ -344,7 +401,11 @@ export const FunctionAnalyticsPage = () => {
   // Auto-deploy and trace service when selected
   useEffect(() => {
     const autoDeployAndTrace = async () => {
-      if (!selectedService || selectedService === 'all' || selectedService.startsWith('system:')) {
+      if (
+        !selectedService ||
+        selectedService === 'all' ||
+        selectedService.startsWith('system:')
+      ) {
         setDeployingService(null);
         setDeploymentStatus('');
         return;
@@ -352,15 +413,21 @@ export const FunctionAnalyticsPage = () => {
 
       // Show loading immediately
       setDeployingService(selectedService);
-      setDeploymentStatus(`🔍 Checking if ${selectedService} exists in Jaeger...`);
+      setDeploymentStatus(
+        `🔍 Checking if ${selectedService} exists in Jaeger...`,
+      );
 
       try {
-        const servicesResponse = await fetchApi.fetch('/api/proxy/jaeger/api/services');
+        const servicesResponse = await fetchApi.fetch(
+          '/api/proxy/jaeger/api/services',
+        );
         const servicesData = await servicesResponse.json();
         const availableServices = servicesData.data || [];
 
         // Find the service config
-        const service = allServices.find(s => s.serviceName === selectedService);
+        const service = allServices.find(
+          s => s.serviceName === selectedService,
+        );
         if (!service) {
           setDeploymentStatus('');
           setDeployingService(null);
@@ -371,23 +438,32 @@ export const FunctionAnalyticsPage = () => {
         let repoName = '';
 
         if (service.source === 'catalog' && 'entity' in service.config) {
-          jaegerServiceName = service.config.jaegerServiceName || selectedService;
+          jaegerServiceName =
+            service.config.jaegerServiceName || selectedService;
           repoName = getServiceRepoName(service);
         }
 
         // If service not in Jaeger, auto-deploy
-        if (!availableServices.includes(jaegerServiceName) && !availableServices.includes(selectedService)) {
-          setDeploymentStatus(`🚀 Starting Jaeger and microservices containers...`);
+        if (
+          !availableServices.includes(jaegerServiceName) &&
+          !availableServices.includes(selectedService)
+        ) {
+          setDeploymentStatus(
+            `🚀 Starting Jaeger and microservices containers...`,
+          );
 
-          const deployResponse = await fetchApi.fetch('/api/function-analytics/service/deploy-and-trace', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              serviceName: selectedService,
-              jaegerServiceName,
-              repoName,
-            }),
-          });
+          const deployResponse = await fetchApi.fetch(
+            '/api/proxy/function-analytics/service/deploy-and-trace',
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                serviceName: selectedService,
+                jaegerServiceName,
+                repoName,
+              }),
+            },
+          );
 
           const result = await deployResponse.json();
 
@@ -395,22 +471,32 @@ export const FunctionAnalyticsPage = () => {
             throw new Error(result.error || 'Deployment failed');
           }
 
-          setDeploymentStatus(`✅ Deployed! Jaeger: ${result.jaegerRunning ? 'Running' : 'Failed'} • Generated ${result.tracesInJaeger} traces`);
-          
+          setDeploymentStatus(
+            `✅ Deployed! Jaeger: ${
+              result.jaegerRunning ? 'Running' : 'Failed'
+            } • Generated ${result.tracesInJaeger} traces`,
+          );
+
           setTimeout(() => {
             handleRefresh();
             setDeployingService(null);
             setDeploymentStatus('');
           }, 3000);
         } else {
-          setDeploymentStatus(`✅ Service "${jaegerServiceName}" is already running`);
+          setDeploymentStatus(
+            `✅ Service "${jaegerServiceName}" is already running`,
+          );
           setTimeout(() => {
             setDeployingService(null);
             setDeploymentStatus('');
           }, 2000);
         }
       } catch (err) {
-        setDeploymentStatus(`❌ Deployment failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
+        setDeploymentStatus(
+          `❌ Deployment failed: ${
+            err instanceof Error ? err.message : 'Unknown error'
+          }`,
+        );
         setTimeout(() => {
           setDeployingService(null);
           setDeploymentStatus('');
@@ -425,20 +511,26 @@ export const FunctionAnalyticsPage = () => {
     if (!selectedService || selectedService === 'all') {
       return allServices.flatMap(service => service.functions || []);
     }
-    
+
     // Check if it's a system group (starts with 'system:')
     if (selectedService.startsWith('system:')) {
       const systemName = selectedService.replace('system:', '');
       return allServices
         .filter(service => {
           if (service.source === 'catalog' && 'entity' in service.config) {
-            const serviceSystem = (service.config.entity.spec?.system as string) || 'backstage-core';
+            const serviceSystem =
+              (service.config.entity.spec?.system as string) ||
+              'backstage-core';
             return serviceSystem === systemName;
           }
           if (service.source === 'manual' && systemName === 'manual-services') {
             return true;
           }
-          if (systemName === 'backstage-core' && service.source === 'catalog' && 'entity' in service.config) {
+          if (
+            systemName === 'backstage-core' &&
+            service.source === 'catalog' &&
+            'entity' in service.config
+          ) {
             const serviceSystem = service.config.entity.spec?.system as string;
             return !serviceSystem || serviceSystem === 'backstage-core';
           }
@@ -446,22 +538,35 @@ export const FunctionAnalyticsPage = () => {
         })
         .flatMap(service => service.functions || []);
     }
-    
+
     // Individual service
     return allServices
       .filter(service => service.serviceName === selectedService)
       .flatMap(service => service.functions || []);
   })();
 
-  const totalCalls = allServices.reduce((sum, service) => sum + service.totalCalls, 0);
-  const avgLatency = allServices.length > 0 
-    ? allServices.reduce((sum, service) => sum + service.avgLatency, 0) / allServices.length 
-    : 0;
-  const criticalFunctions = filteredFunctions.filter(func => func.errorRate > 1 || func.latency > 100);
-  const catalogServiceCount = allServices.filter(s => s.source === 'catalog').length;
-  const manualServiceCount = allServices.filter(s => s.source === 'manual').length;
+  const totalCalls = allServices.reduce(
+    (sum, service) => sum + service.totalCalls,
+    0,
+  );
+  const avgLatency =
+    allServices.length > 0
+      ? allServices.reduce((sum, service) => sum + service.avgLatency, 0) /
+        allServices.length
+      : 0;
+  const criticalFunctions = filteredFunctions.filter(
+    func => func.errorRate > 1 || func.latency > 100,
+  );
+  const catalogServiceCount = allServices.filter(
+    s => s.source === 'catalog',
+  ).length;
+  const manualServiceCount = allServices.filter(
+    s => s.source === 'manual',
+  ).length;
   const placementAnalysis = analyzeFunctionPlacement(filteredFunctions);
-  const misplacedFunctions = placementAnalysis.filter(analysis => analysis.shouldRelocate);
+  const misplacedFunctions = placementAnalysis.filter(
+    analysis => analysis.shouldRelocate,
+  );
   const selectedGroupServices = useMemo(() => {
     if (!selectedService.startsWith('system:')) {
       return [];
@@ -470,9 +575,13 @@ export const FunctionAnalyticsPage = () => {
     return allServices.filter(service => {
       const systemName = selectedService.replace('system:', '');
       if (service.source === 'catalog' && 'entity' in service.config) {
-        const serviceSystem = (service.config.entity.spec?.system as string) || 'backstage-core';
+        const serviceSystem =
+          (service.config.entity.spec?.system as string) || 'backstage-core';
         if (systemName === 'backstage-core') {
-          return !service.config.entity.spec?.system || serviceSystem === 'backstage-core';
+          return (
+            !service.config.entity.spec?.system ||
+            serviceSystem === 'backstage-core'
+          );
         }
         return serviceSystem === systemName;
       }
@@ -481,7 +590,10 @@ export const FunctionAnalyticsPage = () => {
   }, [allServices, selectedService]);
 
   const handleStartGroupTracing = useCallback(async () => {
-    if (!selectedService.startsWith('system:') || selectedGroupServices.length === 0) {
+    if (
+      !selectedService.startsWith('system:') ||
+      selectedGroupServices.length === 0
+    ) {
       return;
     }
 
@@ -493,25 +605,74 @@ export const FunctionAnalyticsPage = () => {
       // eslint-disable-next-line no-console
       console.log(`🚀 Starting group tracing for system: ${selectedService}`);
 
-      // Ensure Jaeger is started via backend before querying traces
+      // Start repo containers first so Jaeger + services are up before per-service trace checks.
+      const repoNames = Array.from(
+        new Set(
+          selectedGroupServices
+            .map(service => getServiceRepoName(service))
+            .filter(Boolean),
+        ),
+      );
+
+      for (const repoName of repoNames) {
+        try {
+          // Find a service from this repo to get GitHub URL
+          const repoService = selectedGroupServices.find(
+            s => getServiceRepoName(s) === repoName,
+          );
+          const gitHubUrl = repoService ? getServiceGitHubUrl(repoService) : '';
+
+          const deployAllResp = await fetchApi.fetch(
+            '/api/proxy/function-analytics/service/deploy-all-and-trace',
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ repoName, gitHubUrl }),
+            },
+          );
+          if (!deployAllResp.ok) {
+            // eslint-disable-next-line no-console
+            console.warn(
+              `Failed to pre-deploy repo ${repoName}: ${deployAllResp.status}`,
+            );
+          }
+        } catch (deployAllErr) {
+          // eslint-disable-next-line no-console
+          console.warn(`Failed to pre-deploy repo ${repoName}:`, deployAllErr);
+        }
+      }
+
+      // Ensure Jaeger is started via backend before querying traces.
       try {
         // Attempt to find a repoName from group services (type-safe)
         let repoCandidate: string | undefined;
         for (const s of selectedGroupServices) {
-          if (s && s.source === 'catalog' && typeof (s.config as any).entity !== 'undefined') {
-            const repoSlug = (s.config as any).entity?.metadata?.annotations?.['github.com/project-slug'];
+          if (
+            s &&
+            s.source === 'catalog' &&
+            typeof (s.config as any).entity !== 'undefined'
+          ) {
+            const repoSlug = (s.config as any).entity?.metadata?.annotations?.[
+              'github.com/project-slug'
+            ];
             if (repoSlug) {
-              repoCandidate = String(repoSlug).split('/').pop()?.replace('.git', '');
+              repoCandidate = String(repoSlug)
+                .split('/')
+                .pop()
+                ?.replace('.git', '');
               break;
             }
           }
         }
 
-        const startJaegerResp = await fetchApi.fetch('/api/function-analytics/service/start-jaeger', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ repoName: repoCandidate || '' }),
-        });
+        const startJaegerResp = await fetchApi.fetch(
+          '/api/proxy/function-analytics/service/start-jaeger',
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ repoName: repoCandidate || '' }),
+          },
+        );
         if (startJaegerResp.ok) {
           // eslint-disable-next-line no-console
           console.log('✅ Requested backend to start Jaeger');
@@ -525,9 +686,13 @@ export const FunctionAnalyticsPage = () => {
         console.warn('⚠️ Failed to start Jaeger via backend:', startErr);
       }
 
-      const jaegerServicesResponse = await fetchApi.fetch('/api/proxy/jaeger/api/services');
+      const jaegerServicesResponse = await fetchApi.fetch(
+        '/api/proxy/jaeger/api/services',
+      );
       if (!jaegerServicesResponse.ok) {
-        throw new Error(`Jaeger service check failed: ${jaegerServicesResponse.status}`);
+        throw new Error(
+          `Jaeger service check failed: ${jaegerServicesResponse.status}`,
+        );
       }
       setJaegerHealthy(true);
       // eslint-disable-next-line no-console
@@ -546,6 +711,32 @@ export const FunctionAnalyticsPage = () => {
         endTime?: number;
       }> = [];
 
+      const parseJsonOrThrow = async (
+        response: Response,
+        context: string,
+      ): Promise<any> => {
+        const contentType = response.headers.get('content-type') || '';
+        const payload = await response.text();
+
+        if (!response.ok) {
+          throw new Error(
+            `${context} failed (${response.status}): ${payload.slice(0, 200)}`,
+          );
+        }
+
+        if (!contentType.includes('application/json')) {
+          const sample = payload.replace(/\s+/g, ' ').slice(0, 140);
+          throw new Error(`${context} returned non-JSON response: ${sample}`);
+        }
+
+        try {
+          return JSON.parse(payload);
+        } catch {
+          const sample = payload.replace(/\s+/g, ' ').slice(0, 140);
+          throw new Error(`${context} returned invalid JSON: ${sample}`);
+        }
+      };
+
       for (const service of selectedGroupServices) {
         const startTime = Date.now();
         const jaegerServiceName = getJaegerServiceName(service);
@@ -557,50 +748,66 @@ export const FunctionAnalyticsPage = () => {
         try {
           // eslint-disable-next-line no-console
           console.log(`📦 Deploying service: ${service.serviceName}`);
-          
-          const deployResponse = await fetchApi.fetch('/api/function-analytics/service/deploy-and-trace', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              serviceName: service.serviceName,
-              jaegerServiceName,
-              repoName: getServiceRepoName(service),
-            }),
-          });
-          const deployResult = await deployResponse.json();
 
-          if (!deployResponse.ok || !deployResult.success) {
-            throw new Error(deployResult.error || `Deploy failed with status ${deployResponse.status}`);
+          const deployResponse = await fetchApi.fetch(
+            '/api/proxy/function-analytics/service/deploy-and-trace',
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                serviceName: service.serviceName,
+                jaegerServiceName,
+                repoName: getServiceRepoName(service),
+              }),
+            },
+          );
+          const deployResult = await parseJsonOrThrow(
+            deployResponse as Response,
+            `Deploy ${service.serviceName}`,
+          );
+
+          if (!deployResult.success) {
+            throw new Error(deployResult.error || 'Deploy failed');
           }
 
           deployStatus = 'started';
           // eslint-disable-next-line no-console
           console.log(`✅ Service deployed: ${service.serviceName}`);
-          message = `Tracing started; generated ${deployResult.tracesInJaeger || 0} traces`;
+          message = `Tracing started; generated ${
+            deployResult.tracesInJaeger || 0
+          } traces`;
         } catch (deployErr) {
           deployStatus = 'failed';
-          message = deployErr instanceof Error ? deployErr.message : 'Deployment failed';
+          message =
+            deployErr instanceof Error
+              ? deployErr.message
+              : 'Deployment failed';
           // eslint-disable-next-line no-console
-          console.error(`❌ Deployment failed for ${service.serviceName}:`, deployErr);
+          console.error(
+            `❌ Deployment failed for ${service.serviceName}:`,
+            deployErr,
+          );
         }
 
         // Query traces from Jaeger
         try {
           // eslint-disable-next-line no-console
           console.log(`🔍 Querying traces for: ${jaegerServiceName}`);
-          
+
           const tracesResponse = await fetchApi.fetch(
             `/api/proxy/jaeger/api/traces?service=${encodeURIComponent(
               jaegerServiceName,
             )}&lookback=${lookback}&limit=100`,
           );
-          if (!tracesResponse.ok) {
-            throw new Error(`Trace query failed: ${tracesResponse.status}`);
-          }
-          const tracesData = await tracesResponse.json();
+          const tracesData = await parseJsonOrThrow(
+            tracesResponse as Response,
+            `Jaeger query ${jaegerServiceName}`,
+          );
           tracesInJaeger = tracesData.data?.length || 0;
           // eslint-disable-next-line no-console
-          console.log(`📊 Found ${tracesInJaeger} traces for ${jaegerServiceName}`);
+          console.log(
+            `📊 Found ${tracesInJaeger} traces for ${jaegerServiceName}`,
+          );
         } catch (traceErr) {
           traceQueryStatus = 'failed';
           if (message) {
@@ -611,7 +818,10 @@ export const FunctionAnalyticsPage = () => {
             message = 'Jaeger trace query failed';
           }
           // eslint-disable-next-line no-console
-          console.warn(`⚠️ Trace query failed for ${jaegerServiceName}:`, traceErr);
+          console.warn(
+            `⚠️ Trace query failed for ${jaegerServiceName}:`,
+            traceErr,
+          );
         }
 
         // Calculate latency and update message
@@ -642,20 +852,27 @@ export const FunctionAnalyticsPage = () => {
       setGroupTraceResults(results);
       // eslint-disable-next-line no-console
       console.log('✅ Group tracing completed, refreshing data...');
-      
+
       // Auto-refresh data after successful tracing
       await new Promise(resolve => setTimeout(resolve, 2000));
       await handleRefresh();
     } catch (err) {
       setJaegerHealthy(false);
-      const errorMsg = err instanceof Error ? err.message : 'Group tracing failed';
+      const errorMsg =
+        err instanceof Error ? err.message : 'Group tracing failed';
       setGroupTraceError(errorMsg);
       // eslint-disable-next-line no-console
       console.error('❌ Group tracing error:', err);
     } finally {
       setGroupTracing(false);
     }
-  }, [fetchApi, handleRefresh, selectedGroupServices, selectedService, timeRange]);
+  }, [
+    fetchApi,
+    handleRefresh,
+    selectedGroupServices,
+    selectedService,
+    timeRange,
+  ]);
 
   if (configLoading) {
     return <Progress />;
@@ -667,29 +884,44 @@ export const FunctionAnalyticsPage = () => {
 
   return (
     <Page themeId="tool">
-      <Header 
-        title="Function Analytics" 
+      <Header
+        title="Function Analytics"
         subtitle={`Hybrid tracing analysis - ${pluginMode.description}`}
       >
         <HeaderLabel label="Mode" value={pluginMode.mode.toUpperCase()} />
         <HeaderLabel label="Services" value={`${allServices.length} total`} />
-        <HeaderLabel label="Last Updated" value={new Date().toLocaleTimeString()} />
+        <HeaderLabel
+          label="Last Updated"
+          value={new Date().toLocaleTimeString()}
+        />
       </Header>
-      
+
       <Content>
         {/* Show deployment status with loading */}
         {deployingService && deploymentStatus && (
-          <Card style={{ marginBottom: 16, backgroundColor: deploymentStatus.includes('✅') ? '#e8f5e9' : '#fff3e0' }}>
+          <Card
+            style={{
+              marginBottom: 16,
+              backgroundColor: deploymentStatus.includes('✅')
+                ? '#e8f5e9'
+                : '#fff3e0',
+            }}
+          >
             <CardContent>
               <Box display="flex" alignItems="center" style={{ gap: 16 }}>
-                {!deploymentStatus.includes('✅') && !deploymentStatus.includes('❌') && (
-                  <Box>
-                    <Progress />
-                  </Box>
-                )}
+                {!deploymentStatus.includes('✅') &&
+                  !deploymentStatus.includes('❌') && (
+                    <Box>
+                      <Progress />
+                    </Box>
+                  )}
                 <Box flex={1}>
-                  <Typography variant="h6" gutterBottom>Deployment Status</Typography>
-                  <Typography variant="body1" style={{ fontWeight: 500 }}>{deploymentStatus}</Typography>
+                  <Typography variant="h6" gutterBottom>
+                    Deployment Status
+                  </Typography>
+                  <Typography variant="body1" style={{ fontWeight: 500 }}>
+                    {deploymentStatus}
+                  </Typography>
                   {deploymentStatus.includes('🚀') && (
                     <Box mt={2}>
                       <Typography variant="body2" color="textSecondary">
@@ -701,7 +933,11 @@ export const FunctionAnalyticsPage = () => {
                       <Typography variant="body2" color="textSecondary">
                         • Generating HTTP requests to create traces
                       </Typography>
-                      <Typography variant="body2" color="textSecondary" style={{ marginTop: 8, fontStyle: 'italic' }}>
+                      <Typography
+                        variant="body2"
+                        color="textSecondary"
+                        style={{ marginTop: 8, fontStyle: 'italic' }}
+                      >
                         Please wait 30-60 seconds...
                       </Typography>
                     </Box>
@@ -723,11 +959,15 @@ export const FunctionAnalyticsPage = () => {
 
         <ContentHeader title="Function-Level Performance Analytics">
           <Box display="flex" style={{ gap: '16px' }}>
-            <FormControl variant="outlined" size="small" style={{ minWidth: 300 }}>
+            <FormControl
+              variant="outlined"
+              size="small"
+              style={{ minWidth: 300 }}
+            >
               <InputLabel>Service</InputLabel>
               <Select
                 value={selectedService}
-                onChange={(e) => setSelectedService(e.target.value as string)}
+                onChange={e => setSelectedService(e.target.value as string)}
                 label="Service"
                 MenuProps={{
                   PaperProps: { className: classes.selectMenuPaper },
@@ -737,18 +977,26 @@ export const FunctionAnalyticsPage = () => {
                 <MenuItem value="all">All Services</MenuItem>
                 {(() => {
                   // Group services by system
-                  const servicesBySystem = new Map<string, typeof  allServices>();
-                  
+                  const servicesBySystem = new Map<
+                    string,
+                    typeof allServices
+                  >();
+
                   allServices.forEach(service => {
                     let systemName: string;
-                    if (service.source === 'catalog' && 'entity' in service.config) {
-                      systemName = (service.config.entity.spec?.system as string) || 'backstage-core';
+                    if (
+                      service.source === 'catalog' &&
+                      'entity' in service.config
+                    ) {
+                      systemName =
+                        (service.config.entity.spec?.system as string) ||
+                        'backstage-core';
                     } else if (service.source === 'manual') {
                       systemName = 'manual-services';
                     } else {
                       systemName = 'backstage-core';
                     }
-                    
+
                     if (!servicesBySystem.has(systemName)) {
                       servicesBySystem.set(systemName, []);
                     }
@@ -756,7 +1004,9 @@ export const FunctionAnalyticsPage = () => {
                   });
 
                   // Sort: microservice systems first, then manual, then backstage-core
-                  const sortedSystems = Array.from(servicesBySystem.entries()).sort(([a], [b]) => {
+                  const sortedSystems = Array.from(
+                    servicesBySystem.entries(),
+                  ).sort(([a], [b]) => {
                     if (a === 'backstage-core') return 1;
                     if (b === 'backstage-core') return -1;
                     if (a === 'manual-services') return 1;
@@ -771,64 +1021,107 @@ export const FunctionAnalyticsPage = () => {
                     } else if (systemName === 'manual-services') {
                       systemTitle = 'Manual Services';
                     } else {
-                      systemTitle = systemName.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+                      systemTitle = systemName
+                        .split('-')
+                        .map(w => w.charAt(0).toUpperCase() + w.slice(1))
+                        .join(' ');
                     }
-                    
+
                     // Calculate total services and functions in this system
                     const totalServices = services.length;
-                    const totalFunctions = services.reduce((sum, s) => sum + (s.functions?.length || 0), 0);
-                    
+                    const totalFunctions = services.reduce(
+                      (sum, s) => sum + (s.functions?.length || 0),
+                      0,
+                    );
+
                     return [
-                      <ListSubheader 
+                      <ListSubheader
                         key={`header-${systemName}`}
                         className={classes.selectSubheader}
                       >
                         📦 {systemTitle}
                       </ListSubheader>,
-                      
+
                       // Add system group option
-                      <MenuItem 
-                        key={`system-${systemName}`} 
+                      <MenuItem
+                        key={`system-${systemName}`}
                         value={`system:${systemName}`}
                         className={classes.selectSystemItem}
                       >
-                        <Box display="flex" alignItems="center" justifyContent="space-between" width="100%">
-                          <Box display="flex" alignItems="center" style={{ gap: 8 }}>
+                        <Box
+                          display="flex"
+                          alignItems="center"
+                          justifyContent="space-between"
+                          width="100%"
+                        >
+                          <Box
+                            display="flex"
+                            alignItems="center"
+                            style={{ gap: 8 }}
+                          >
                             <CheckCircleIcon fontSize="small" color="primary" />
                             <em>All {systemTitle}</em>
                           </Box>
-                          <Chip 
+                          <Chip
                             label={`${totalServices} services • ${totalFunctions} functions`}
                             size="small"
-                            style={{ height: 20, fontSize: '0.7rem', marginLeft: 8 }}
+                            style={{
+                              height: 20,
+                              fontSize: '0.7rem',
+                              marginLeft: 8,
+                            }}
                             color="primary"
                           />
                         </Box>
                       </MenuItem>,
-                      
+
                       // Individual services
                       ...services.map(service => (
-                        <MenuItem 
-                          key={service.serviceName} 
+                        <MenuItem
+                          key={service.serviceName}
                           value={service.serviceName}
                           className={classes.selectServiceItem}
                         >
-                          <Box display="flex" alignItems="center" justifyContent="space-between" width="100%">
-                            <Box display="flex" alignItems="center" style={{ gap: 8 }}>
-                              {service.source === 'catalog' ? <CloudQueueIcon fontSize="small" /> : <StorageIcon fontSize="small" />}
+                          <Box
+                            display="flex"
+                            alignItems="center"
+                            justifyContent="space-between"
+                            width="100%"
+                          >
+                            <Box
+                              display="flex"
+                              alignItems="center"
+                              style={{ gap: 8 }}
+                            >
+                              {service.source === 'catalog' ? (
+                                <CloudQueueIcon fontSize="small" />
+                              ) : (
+                                <StorageIcon fontSize="small" />
+                              )}
                               {service.serviceName}
                             </Box>
-                            <Box display="flex" alignItems="center" style={{ gap: 4 }}>
-                              {service.source === 'catalog' && 'entity' in service.config && (
-                                <Chip 
-                                  label={service.config.entity.metadata.description?.match(/(nodejs|python|go|java)/i)?.[0]?.toUpperCase() || 'API'}
-                                  size="small"
-                                  style={{ height: 20, fontSize: '0.7rem' }}
-                                  color="primary"
-                                />
-                              )}
-                              <Chip 
-                                label={`${service.functions?.length || 0} functions`}
+                            <Box
+                              display="flex"
+                              alignItems="center"
+                              style={{ gap: 4 }}
+                            >
+                              {service.source === 'catalog' &&
+                                'entity' in service.config && (
+                                  <Chip
+                                    label={
+                                      service.config.entity.metadata.description
+                                        ?.match(/(nodejs|python|go|java)/i)?.[0]
+                                        ?.toUpperCase() || 'API'
+                                    }
+                                    size="small"
+                                    style={{ height: 20, fontSize: '0.7rem' }}
+                                    color="primary"
+                                  />
+                                )}
+                              <Chip
+                                label={`${
+                                  service.functions?.length || 0
+                                } functions`}
                                 size="small"
                                 style={{ height: 20, fontSize: '0.7rem' }}
                                 variant="outlined"
@@ -836,18 +1129,22 @@ export const FunctionAnalyticsPage = () => {
                             </Box>
                           </Box>
                         </MenuItem>
-                      ))
+                      )),
                     ];
                   });
                 })()}
               </Select>
             </FormControl>
-            
-            <FormControl variant="outlined" size="small" style={{ minWidth: 100 }}>
+
+            <FormControl
+              variant="outlined"
+              size="small"
+              style={{ minWidth: 100 }}
+            >
               <InputLabel>Time Range</InputLabel>
               <Select
                 value={timeRange}
-                onChange={(e) => setTimeRange(e.target.value as string)}
+                onChange={e => setTimeRange(e.target.value as string)}
                 label="Time Range"
                 MenuProps={{
                   PaperProps: { className: classes.selectMenuPaper },
@@ -878,7 +1175,7 @@ export const FunctionAnalyticsPage = () => {
               Configure
             </Button>
           </Box>
-          
+
           {error && (
             <Box mt={2}>
               <Alert severity="error">
@@ -920,7 +1217,10 @@ export const FunctionAnalyticsPage = () => {
                 <Typography variant="h6" color="textSecondary">
                   Critical Functions
                 </Typography>
-                <Typography className={classes.metricValue} style={{ color: '#f44336' }}>
+                <Typography
+                  className={classes.metricValue}
+                  style={{ color: '#f44336' }}
+                >
                   {criticalFunctions.length}
                 </Typography>
               </CardContent>
@@ -932,7 +1232,10 @@ export const FunctionAnalyticsPage = () => {
                 <Typography variant="h6" color="textSecondary">
                   Misplaced Functions
                 </Typography>
-                <Typography className={classes.metricValue} style={{ color: '#ff9800' }}>
+                <Typography
+                  className={classes.metricValue}
+                  style={{ color: '#ff9800' }}
+                >
                   {misplacedFunctions.length}
                 </Typography>
               </CardContent>
@@ -941,7 +1244,12 @@ export const FunctionAnalyticsPage = () => {
         </Grid>
 
         <Paper>
-          <Tabs value={tabValue} onChange={handleTabChange} indicatorColor="primary" textColor="primary">
+          <Tabs
+            value={tabValue}
+            onChange={handleTabChange}
+            indicatorColor="primary"
+            textColor="primary"
+          >
             <Tab label="Configure Services" />
             <Tab label="Trace Viewer" />
             <Tab label="Function Details" />
@@ -950,12 +1258,12 @@ export const FunctionAnalyticsPage = () => {
             <Tab label="Configuration" />
             <Tab label="Function Placement Analysis" />
           </Tabs>
-          
+
           {/* Tab 0: Configuration Wizard */}
           <TabPanel value={tabValue} index={0}>
             <MicroserviceConfigWizard />
           </TabPanel>
-          
+
           {/* Tab 1: Trace Viewer */}
           <TabPanel value={tabValue} index={1}>
             {(() => {
@@ -964,10 +1272,12 @@ export const FunctionAnalyticsPage = () => {
                   <Box p={3}>
                     <Alert severity="info">
                       <Typography variant="body1">
-                        Please select a service or service group from the dropdown above.
+                        Please select a service or service group from the
+                        dropdown above.
                       </Typography>
                       <Typography variant="body2" style={{ marginTop: 8 }}>
-                        Select an individual service to inspect traces, or a group to start tracing for the full group.
+                        Select an individual service to inspect traces, or a
+                        group to start tracing for the full group.
                       </Typography>
                     </Alert>
                   </Box>
@@ -989,16 +1299,26 @@ export const FunctionAnalyticsPage = () => {
                         Group selected: {selectedService.replace('system:', '')}
                       </Typography>
                       <Typography variant="body2" style={{ marginTop: 8 }}>
-                        Start tracing for all services in this group, then verify OpenTelemetry and Jaeger flow from this panel.
+                        Start tracing for all services in this group, then
+                        verify OpenTelemetry and Jaeger flow from this panel.
                       </Typography>
-                      <Box mt={2} display="flex" alignItems="center" style={{ gap: 12 }}>
+                      <Box
+                        mt={2}
+                        display="flex"
+                        alignItems="center"
+                        style={{ gap: 12 }}
+                      >
                         <Button
                           variant="contained"
                           color="primary"
                           onClick={handleStartGroupTracing}
-                          disabled={groupTracing || selectedGroupServices.length === 0}
+                          disabled={
+                            groupTracing || selectedGroupServices.length === 0
+                          }
                         >
-                          {groupTracing ? 'Starting Tracing...' : 'Start Tracing for Group'}
+                          {groupTracing
+                            ? 'Starting Tracing...'
+                            : 'Start Tracing for Group'}
                         </Button>
                         <Chip
                           size="small"
@@ -1022,7 +1342,10 @@ export const FunctionAnalyticsPage = () => {
                     <Box mt={2}>
                       <DataFlowVisualization
                         jaegerHealthy={jaegerHealthy}
-                        tracesCollected={groupTraceResults.reduce((s, r) => s + r.tracesInJaeger, 0)}
+                        tracesCollected={groupTraceResults.reduce(
+                          (s, r) => s + r.tracesInJaeger,
+                          0,
+                        )}
                         servicesDeployed={selectedGroupServices.length}
                         isTracing={groupTracing}
                       />
@@ -1050,23 +1373,36 @@ export const FunctionAnalyticsPage = () => {
               }
 
               // Find the service config to get the correct Jaeger service name and repo
-              const service = allServices.find(s => s.serviceName === selectedService);
+              const service = allServices.find(
+                s => s.serviceName === selectedService,
+              );
               let jaegerServiceName = selectedService;
               let repoName = '';
 
-              if (service && service.source === 'catalog' && 'entity' in service.config) {
+              if (
+                service &&
+                service.source === 'catalog' &&
+                'entity' in service.config
+              ) {
                 // Use the jaegerServiceName from catalog config if available
-                jaegerServiceName = service.config.jaegerServiceName || selectedService;
+                jaegerServiceName =
+                  service.config.jaegerServiceName || selectedService;
                 // Get repo name from catalog metadata
                 repoName = getServiceRepoName(service);
               }
               // For manual services without catalog metadata, auto-start is skipped
               // (repoName will remain empty)
 
-              return <TraceViewer serviceName={jaegerServiceName} timeRange={timeRange} repoName={repoName} />;
+              return (
+                <TraceViewer
+                  serviceName={jaegerServiceName}
+                  timeRange={timeRange}
+                  repoName={repoName}
+                />
+              );
             })()}
           </TabPanel>
-          
+
           {/* Tab 2: Function Details */}
           <TabPanel value={tabValue} index={2}>
             <TableContainer className={classes.tableContainer}>
@@ -1089,45 +1425,67 @@ export const FunctionAnalyticsPage = () => {
                 <TableBody>
                   {filteredFunctions.length > 0 ? (
                     filteredFunctions.map((func, index) => {
-                      const service = allServices.find(s => s.serviceName === func.serviceName);
+                      const service = allServices.find(
+                        s => s.serviceName === func.serviceName,
+                      );
                       return (
-                        <TableRow 
+                        <TableRow
                           key={index}
-                          className={service?.source === 'catalog' ? classes.catalogService : classes.manualService}
+                          className={
+                            service?.source === 'catalog'
+                              ? classes.catalogService
+                              : classes.manualService
+                          }
                         >
                           <TableCell>{func.functionName}</TableCell>
                           <TableCell>{func.serviceName}</TableCell>
                           <TableCell>
-                            <Chip 
-                              icon={service?.source === 'catalog' ? <CloudQueueIcon /> : <StorageIcon />}
-                              label={service?.source || 'unknown'} 
+                            <Chip
+                              icon={
+                                service?.source === 'catalog' ? (
+                                  <CloudQueueIcon />
+                                ) : (
+                                  <StorageIcon />
+                                )
+                              }
+                              label={service?.source || 'unknown'}
                               size="small"
                               className={classes.serviceSourceChip}
-                              color={service?.source === 'catalog' ? 'primary' : 'secondary'}
+                              color={
+                                service?.source === 'catalog'
+                                  ? 'primary'
+                                  : 'secondary'
+                              }
                             />
                           </TableCell>
                           <TableCell>
-                            <Chip 
-                              label={func.type} 
-                              color={func.type === 'external' ? 'secondary' : 'primary'} 
+                            <Chip
+                              label={func.type}
+                              color={
+                                func.type === 'external'
+                                  ? 'secondary'
+                                  : 'primary'
+                              }
                               size="small"
                             />
                           </TableCell>
                           <TableCell>
-                            <Chip 
-                              label={func.microserviceType || 'service'} 
-                              color="default" 
+                            <Chip
+                              label={func.microserviceType || 'service'}
+                              color="default"
                               size="small"
                             />
                           </TableCell>
                           <TableCell>
                             {func.httpMethod ? (
-                              <Chip 
-                                label={func.httpMethod} 
-                                color="primary" 
+                              <Chip
+                                label={func.httpMethod}
+                                color="primary"
                                 size="small"
                               />
-                            ) : '-'}
+                            ) : (
+                              '-'
+                            )}
                           </TableCell>
                           <TableCell>{func.latency.toFixed(1)}</TableCell>
                           <TableCell>{func.errorRate.toFixed(2)}</TableCell>
@@ -1138,9 +1496,13 @@ export const FunctionAnalyticsPage = () => {
                     })
                   ) : (
                     <TableRow>
-                      <TableCell colSpan={10} style={{ textAlign: 'center', padding: '40px' }}>
+                      <TableCell
+                        colSpan={10}
+                        style={{ textAlign: 'center', padding: '40px' }}
+                      >
                         <Typography color="textSecondary">
-                          No function data available. Configure services to start analyzing traces.
+                          No function data available. Configure services to
+                          start analyzing traces.
                         </Typography>
                       </TableCell>
                     </TableRow>
@@ -1172,27 +1534,51 @@ export const FunctionAnalyticsPage = () => {
                 </TableHead>
                 <TableBody>
                   {allServices.map((service, index) => (
-                    <TableRow 
+                    <TableRow
                       key={index}
-                      className={service.source === 'catalog' ? classes.catalogService : classes.manualService}
+                      className={
+                        service.source === 'catalog'
+                          ? classes.catalogService
+                          : classes.manualService
+                      }
                     >
                       <TableCell>{service.serviceName}</TableCell>
                       <TableCell>
-                        <Chip 
-                          icon={service.source === 'catalog' ? <CloudQueueIcon /> : <StorageIcon />}
-                          label={service.source} 
+                        <Chip
+                          icon={
+                            service.source === 'catalog' ? (
+                              <CloudQueueIcon />
+                            ) : (
+                              <StorageIcon />
+                            )
+                          }
+                          label={service.source}
                           size="small"
-                          color={service.source === 'catalog' ? 'primary' : 'secondary'}
+                          color={
+                            service.source === 'catalog'
+                              ? 'primary'
+                              : 'secondary'
+                          }
                         />
                       </TableCell>
                       <TableCell>{service.owner || 'Unknown'}</TableCell>
                       <TableCell>{service.environment || 'Unknown'}</TableCell>
                       <TableCell>
-                        <Chip 
-                          icon={service.connectionStatus === 'connected' ? <CheckCircleIcon /> : <CancelIcon />}
-                          label={service.connectionStatus} 
+                        <Chip
+                          icon={
+                            service.connectionStatus === 'connected' ? (
+                              <CheckCircleIcon />
+                            ) : (
+                              <CancelIcon />
+                            )
+                          }
+                          label={service.connectionStatus}
                           size="small"
-                          color={service.connectionStatus === 'connected' ? 'primary' : 'default'}
+                          color={
+                            service.connectionStatus === 'connected'
+                              ? 'primary'
+                              : 'default'
+                          }
                         />
                       </TableCell>
                       <TableCell>{service.totalCalls}</TableCell>
@@ -1212,13 +1598,14 @@ export const FunctionAnalyticsPage = () => {
               Microservice Architecture Analysis
             </Typography>
             <Typography variant="body2" color="textSecondary" paragraph>
-              Analyze microservice dependencies, critical paths, and architectural patterns.
+              Analyze microservice dependencies, critical paths, and
+              architectural patterns.
             </Typography>
-            
+
             {(() => {
               const architecture = analyzeMicroserviceArchitecture(allServices);
               const serviceList = Array.from(architecture.serviceMap.entries());
-              
+
               return (
                 <Grid container spacing={3}>
                   <Grid item xs={12} md={6}>
@@ -1236,18 +1623,22 @@ export const FunctionAnalyticsPage = () => {
                                 </ListItemIcon>
                                 <ListItemText
                                   primary={service}
-                                  secondary={`Dependencies: ${deps.length > 0 ? deps.join(', ') : 'None'}`}
+                                  secondary={`Dependencies: ${
+                                    deps.length > 0 ? deps.join(', ') : 'None'
+                                  }`}
                                 />
                               </ListItem>
                             ))}
                           </List>
                         ) : (
-                          <Typography color="textSecondary">No service dependencies found</Typography>
+                          <Typography color="textSecondary">
+                            No service dependencies found
+                          </Typography>
                         )}
                       </CardContent>
                     </Card>
                   </Grid>
-                  
+
                   <Grid item xs={12} md={6}>
                     <Card>
                       <CardContent>
@@ -1269,12 +1660,14 @@ export const FunctionAnalyticsPage = () => {
                             ))}
                           </List>
                         ) : (
-                          <Typography color="textSecondary">No critical paths identified</Typography>
+                          <Typography color="textSecondary">
+                            No critical paths identified
+                          </Typography>
                         )}
                       </CardContent>
                     </Card>
                   </Grid>
-                  
+
                   <Grid item xs={12} md={6}>
                     <Card>
                       <CardContent>
@@ -1283,25 +1676,29 @@ export const FunctionAnalyticsPage = () => {
                         </Typography>
                         {architecture.bottlenecks.length > 0 ? (
                           <List dense>
-                            {architecture.bottlenecks.map((bottleneck, index) => (
-                              <ListItem key={index}>
-                                <ListItemIcon>
-                                  <CancelIcon color="error" />
-                                </ListItemIcon>
-                                <ListItemText
-                                  primary={bottleneck}
-                                  secondary="High latency or error rate detected"
-                                />
-                              </ListItem>
-                            ))}
+                            {architecture.bottlenecks.map(
+                              (bottleneck, index) => (
+                                <ListItem key={index}>
+                                  <ListItemIcon>
+                                    <CancelIcon color="error" />
+                                  </ListItemIcon>
+                                  <ListItemText
+                                    primary={bottleneck}
+                                    secondary="High latency or error rate detected"
+                                  />
+                                </ListItem>
+                              ),
+                            )}
                           </List>
                         ) : (
-                          <Typography color="textSecondary">No bottlenecks identified</Typography>
+                          <Typography color="textSecondary">
+                            No bottlenecks identified
+                          </Typography>
                         )}
                       </CardContent>
                     </Card>
                   </Grid>
-                  
+
                   <Grid item xs={12} md={6}>
                     <Card>
                       <CardContent>
@@ -1310,11 +1707,16 @@ export const FunctionAnalyticsPage = () => {
                         </Typography>
                         <List dense>
                           {allServices.map((service, index) => {
-                            const typeCounts = service.functions.reduce((acc, func) => {
-                              acc[func.microserviceType || 'service'] = (acc[func.microserviceType || 'service'] || 0) + 1;
-                              return acc;
-                            }, {} as Record<string, number>);
-                            
+                            const typeCounts = service.functions.reduce(
+                              (acc, func) => {
+                                acc[func.microserviceType || 'service'] =
+                                  (acc[func.microserviceType || 'service'] ||
+                                    0) + 1;
+                                return acc;
+                              },
+                              {} as Record<string, number>,
+                            );
+
                             return (
                               <ListItem key={index}>
                                 <ListItemIcon>
@@ -1343,7 +1745,7 @@ export const FunctionAnalyticsPage = () => {
             <Typography variant="h6" gutterBottom>
               Hybrid Configuration Management
             </Typography>
-            
+
             <Grid container spacing={3}>
               <Grid item xs={12} md={6}>
                 <Card>
@@ -1352,7 +1754,8 @@ export const FunctionAnalyticsPage = () => {
                       Catalog Services ({catalogServiceCount})
                     </Typography>
                     <Typography variant="body2" color="textSecondary" paragraph>
-                      Services auto-discovered from Backstage catalog with tracing annotations.
+                      Services auto-discovered from Backstage catalog with
+                      tracing annotations.
                     </Typography>
                     {catalogServices.length > 0 ? (
                       <List dense>
@@ -1363,14 +1766,17 @@ export const FunctionAnalyticsPage = () => {
                             </ListItemIcon>
                             <ListItemText
                               primary={service.serviceName}
-                              secondary={`Owner: ${service.owner || 'Unknown'} • ${service.environment}`}
+                              secondary={`Owner: ${
+                                service.owner || 'Unknown'
+                              } • ${service.environment}`}
                             />
                           </ListItem>
                         ))}
                       </List>
                     ) : (
                       <Alert severity="info">
-                        No catalog services found. Add tracing annotations to your catalog entities.
+                        No catalog services found. Add tracing annotations to
+                        your catalog entities.
                       </Alert>
                     )}
                   </CardContent>
@@ -1388,7 +1794,7 @@ export const FunctionAnalyticsPage = () => {
                     </Typography>
                     {manualServices.length > 0 ? (
                       <List dense>
-                        {manualServices.map((service) => (
+                        {manualServices.map(service => (
                           <ListItem key={service.id}>
                             <ListItemIcon>
                               <StorageIcon color="secondary" />
@@ -1424,9 +1830,11 @@ export const FunctionAnalyticsPage = () => {
               Function Placement Analysis - Identify Misplaced Functions
             </Typography>
             <Typography variant="body2" color="textSecondary" paragraph>
-              Functions with high external call percentages (&gt;70%) may be misplaced and should be relocated to optimize performance and reduce cross-service latency.
+              Functions with high external call percentages (&gt;70%) may be
+              misplaced and should be relocated to optimize performance and
+              reduce cross-service latency.
             </Typography>
-            
+
             <TableContainer className={classes.tableContainer}>
               <Table>
                 <TableHead>
@@ -1445,44 +1853,63 @@ export const FunctionAnalyticsPage = () => {
                 <TableBody>
                   {placementAnalysis.length > 0 ? (
                     placementAnalysis.map((analysis, index) => {
-                      const service = allServices.find(s => s.serviceName === analysis.serviceName);
+                      const service = allServices.find(
+                        s => s.serviceName === analysis.serviceName,
+                      );
                       return (
-                        <TableRow 
+                        <TableRow
                           key={index}
                           className={getRowClassName(
                             analysis.securityRisk,
                             analysis.shouldRelocate,
-                            classes
+                            classes,
                           )}
                         >
                           <TableCell>{analysis.functionName}</TableCell>
                           <TableCell>{analysis.serviceName}</TableCell>
                           <TableCell>
-                            <Chip 
-                              icon={service?.source === 'catalog' ? <CloudQueueIcon /> : <StorageIcon />}
-                              label={service?.source || 'unknown'} 
+                            <Chip
+                              icon={
+                                service?.source === 'catalog' ? (
+                                  <CloudQueueIcon />
+                                ) : (
+                                  <StorageIcon />
+                                )
+                              }
+                              label={service?.source || 'unknown'}
                               size="small"
                               className={classes.serviceSourceChip}
                             />
                           </TableCell>
-                          <TableCell>{analysis.internalCallPercentage.toFixed(1)}%</TableCell>
-                          <TableCell>{analysis.externalCallPercentage.toFixed(1)}%</TableCell>
                           <TableCell>
-                            <Chip 
-                              label={analysis.securityRisk} 
+                            {analysis.internalCallPercentage.toFixed(1)}%
+                          </TableCell>
+                          <TableCell>
+                            {analysis.externalCallPercentage.toFixed(1)}%
+                          </TableCell>
+                          <TableCell>
+                            <Chip
+                              label={analysis.securityRisk}
                               color={getChipColor(analysis.securityRisk)}
                               size="small"
                             />
                           </TableCell>
                           <TableCell>{analysis.relocateReason}</TableCell>
-                          <TableCell>{analysis.suggestedTargetService || 'N/A'}</TableCell>
-                          <TableCell>{analysis.latencyImpact.toFixed(1)}</TableCell>
+                          <TableCell>
+                            {analysis.suggestedTargetService || 'N/A'}
+                          </TableCell>
+                          <TableCell>
+                            {analysis.latencyImpact.toFixed(1)}
+                          </TableCell>
                         </TableRow>
                       );
                     })
                   ) : (
                     <TableRow>
-                      <TableCell colSpan={9} style={{ textAlign: 'center', padding: '40px' }}>
+                      <TableCell
+                        colSpan={9}
+                        style={{ textAlign: 'center', padding: '40px' }}
+                      >
                         <Typography color="textSecondary">
                           No function placement data available for analysis.
                         </Typography>

@@ -199,6 +199,14 @@ catalog:
 
     # Backstage example entities
     - type: file
+      target: ../../microservices/simple-microservice-example/catalog-info.yaml
+      rules:
+        - allow: [System, Component, API, Resource]
+    - type: file
+      target: ../../microservices/microservice-app-example/catalog-info.yaml
+      rules:
+        - allow: [System, Component, API, Resource]
+    - type: file
       target: ../catalog-model/examples/all.yaml
     # Backstage example groups and users
     - type: file

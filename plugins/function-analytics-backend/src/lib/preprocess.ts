@@ -19,11 +19,65 @@ import { CleanedCall } from './types';
 /**
  * List of operation names to skip during preprocessing
  */
-const NOISE_OPERATIONS = ['/health', '/status', '/metrics', '/ready', '/live'];
+const NOISE_OPERATIONS = [
+  '/health',
+  '/status',
+  '/metrics',
+  '/ready',
+  '/live',
+  'health-check',
+  'prometheus',
+  'otlp',
+  'zipkin',
+];
+
+/**
+ * Normalizes operation names to clean function names
+ */
+function normalizeFunctionName(operationName: string, tags: any[]): string {
+  if (!operationName) return 'unknown_function';
+
+  // centralize the cleaning logic
+  let cleanName = operationName;
+
+  // Pattern matching for various frameworks
+  const patterns = [
+    /^(GET|POST|PUT|DELETE|PATCH) \/api\/([^\/]+)\/([^\/\?]+)/i,
+    /^(GET|POST|PUT|DELETE|PATCH) \/([^\/]+)\/([^\/\?]+)/i,
+    /^([A-Za-z0-9]+Controller)\.([A-Za-z0-9]+)/,
+    /^([A-Za-z0-9]+Service)\.([A-Za-z0-9]+)/,
+    /^([a-z_]+)\.([a-z_]+)/,
+    /^\/([A-Za-z0-9.]+)\/([A-Za-z0-9]+)/,
+  ];
+
+  for (const pattern of patterns) {
+    const match = cleanName.match(pattern);
+    if (match) {
+      cleanName = match[match.length - 1] || match[0];
+      break;
+    }
+  }
+
+  // Fallback to tags if provided
+  const functionTag = tags?.find(
+    tag =>
+      tag.key === 'function.name' ||
+      tag.key === 'code.function' ||
+      tag.key === 'method.name',
+  );
+
+  if (functionTag) return String(functionTag.value);
+
+  return cleanName
+    .replace(/^(GET|POST|PUT|DELETE|PATCH)\s+/i, '')
+    .replace(/[^a-zA-Z0-9_]/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_|_$/g, '');
+}
 
 /**
  * Preprocesses raw Jaeger trace data into cleaned function calls
- * 
+ *
  * @param rawTraces - Array of raw Jaeger trace objects
  * @returns Array of cleaned function calls with caller/callee information
  */
@@ -48,7 +102,8 @@ export function preprocessTraces(rawTraces: any[]): CleanedCall[] {
     // Process each span
     for (const span of trace.spans) {
       const operationName = span.operationName;
-      const calleeService = trace.processes?.[span.processID]?.serviceName || 'unknown';
+      const calleeService =
+        trace.processes?.[span.processID]?.serviceName || 'unknown';
       const duration = span.duration || 0;
 
       // Skip noise operations
@@ -67,7 +122,10 @@ export function preprocessTraces(rawTraces: any[]): CleanedCall[] {
         for (const ref of span.references) {
           if (ref.refType === 'CHILD_OF' || ref.refType === 'FOLLOWS_FROM') {
             const parentSpan = spanMap.get(ref.spanID);
-            if (parentSpan && trace.processes?.[parentSpan.processID]?.serviceName) {
+            if (
+              parentSpan &&
+              trace.processes?.[parentSpan.processID]?.serviceName
+            ) {
               callerService = trace.processes[parentSpan.processID].serviceName;
               break;
             }
@@ -76,7 +134,7 @@ export function preprocessTraces(rawTraces: any[]): CleanedCall[] {
       }
 
       cleanedCalls.push({
-        functionName: operationName,
+        functionName: normalizeFunctionName(operationName, span.tags),
         callerService,
         calleeService,
         latency: duration / 1000, // Convert microseconds to milliseconds

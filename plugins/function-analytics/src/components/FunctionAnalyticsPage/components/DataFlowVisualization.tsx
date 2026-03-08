@@ -137,53 +137,71 @@ export const DataFlowVisualization: React.FC<DataFlowVisualizationProps> = ({
       message: 'Waiting for data from Jaeger',
     },
   ]);
-
-
   useEffect(() => {
-    const updatedSteps = [...steps];
-    
-    if (isTracing) {
-      // Services Deployment
-      updatedSteps[0].status = 'loading';
-      updatedSteps[0].message = `Deploying ${servicesDeployed} services...`;
-      
-      // OpenTelemetry Collection
-      updatedSteps[1].status = servicesDeployed > 0 ? 'loading' : 'idle';
-      updatedSteps[1].message = servicesDeployed > 0 
-        ? `Collecting traces from ${servicesDeployed} services...`
-        : 'Waiting for services...';
-      
-      // Jaeger Storage
-      updatedSteps[2].status = 'idle';
-      updatedSteps[2].message = 'Waiting for OpenTelemetry data...';
-      
-      // Frontend Display
-      updatedSteps[3].status = 'idle';
-      updatedSteps[3].message = 'Waiting for Jaeger data...';
-    } else if (jaegerHealthy === null) {
-      updatedSteps[2].status = 'idle';
-      updatedSteps[2].message = 'Checking Jaeger connection...';
-    } else if (jaegerHealthy === false) {
-      updatedSteps[2].status = 'error';
-      updatedSteps[2].message = 'Jaeger unreachable (localhost:16686)';
-    } else if (jaegerHealthy === true) {
-      if (servicesDeployed > 0) {
+    setSteps(prevSteps => {
+      const updatedSteps = [...prevSteps];
+
+      if (isTracing) {
+        // Phase 1 – Services are being deployed
+        updatedSteps[0].status = 'loading';
+        updatedSteps[0].message = `Deploying ${servicesDeployed} services...`;
+
+        // Phase 2 – OTel collection starts once services are up
+        updatedSteps[1].status = servicesDeployed > 0 ? 'loading' : 'idle';
+        updatedSteps[1].message =
+          servicesDeployed > 0
+            ? `Collecting traces from ${servicesDeployed} services...`
+            : 'Waiting for services to spin up...';
+
+        // Phase 3 – Jaeger is receiving data (show as loading, not idle)
+        updatedSteps[2].status = servicesDeployed > 0 ? 'loading' : 'idle';
+        updatedSteps[2].message =
+          servicesDeployed > 0
+            ? 'Waiting for OpenTelemetry data to reach Jaeger...'
+            : 'Waiting for services...';
+
+        // Phase 4 – Frontend waits for Jaeger data
+        updatedSteps[3].status = 'idle';
+        updatedSteps[3].message = 'Waiting for Jaeger data...';
+      } else if (jaegerHealthy === null) {
+        // Not yet checked
+        updatedSteps[2].status = 'loading';
+        updatedSteps[2].message = 'Checking Jaeger connection...';
+      } else if (jaegerHealthy === false) {
+        // Jaeger is unreachable — mark error and cascade
+        updatedSteps[2].status = 'error';
+        updatedSteps[2].message =
+          'Jaeger unreachable (localhost:16686) — ensure Jaeger container is running';
+        updatedSteps[3].status = 'error';
+        updatedSteps[3].message = 'Cannot display data without Jaeger';
+      } else if (jaegerHealthy === true && servicesDeployed > 0) {
+        // Happy path — Jaeger up and services deployed
         updatedSteps[0].status = 'success';
-        updatedSteps[0].message = `✓ ${servicesDeployed} services deployed`;
+        updatedSteps[0].message = `✅ ${servicesDeployed} service(s) deployed`;
+
         updatedSteps[1].status = 'success';
-        updatedSteps[1].message = `✓ OpenTelemetry enabled`;
+        updatedSteps[1].message = '✅ OpenTelemetry agents enabled';
+
         updatedSteps[2].status = tracesCollected > 0 ? 'success' : 'loading';
-        updatedSteps[2].message = tracesCollected > 0 
-          ? `✓ ${tracesCollected} traces in Jaeger`
-          : 'Collecting traces...';
+        updatedSteps[2].message =
+          tracesCollected > 0
+            ? `✅ ${tracesCollected} trace(s) stored in Jaeger`
+            : 'Collecting traces — waiting for first batch...';
+
         updatedSteps[3].status = tracesCollected > 0 ? 'success' : 'loading';
-        updatedSteps[3].message = tracesCollected > 0 
-          ? `✓ Displaying ${tracesCollected} function calls`
-          : 'Waiting for traces...';
+        updatedSteps[3].message =
+          tracesCollected > 0
+            ? `✅ Displaying ${tracesCollected} function call(s)`
+            : 'Waiting for traces to display...';
+      } else if (jaegerHealthy === true && servicesDeployed === 0) {
+        // Jaeger healthy but no services selected/deployed yet
+        updatedSteps[2].status = 'loading';
+        updatedSteps[2].message =
+          'Jaeger connected — waiting for services to be deployed';
       }
-    }
-    
-    setSteps(updatedSteps);
+
+      return updatedSteps;
+    });
   }, [isTracing, jaegerHealthy, tracesCollected, servicesDeployed]);
 
   const getStepIcon = (status: string) => {
@@ -210,22 +228,30 @@ export const DataFlowVisualization: React.FC<DataFlowVisualizationProps> = ({
     }
   };
 
-  const activeStep = steps.findIndex(s => s.status === 'loading' || s.status === 'idle');
+  const activeStep = steps.findIndex(
+    s => s.status === 'loading' || s.status === 'idle',
+  );
 
   return (
     <Card className={classes.card}>
-      <CardHeader 
+      <CardHeader
         title="📊 Data Flow: Services → OpenTelemetry → Jaeger → Frontend"
         subheader="Real-time tracing pipeline status"
       />
       <CardContent>
         {/* Visual Flow Diagram */}
-        <Box className={classes.dataFlowDiagram} display="flex" alignItems="center">
+        <Box
+          className={classes.dataFlowDiagram}
+          display="flex"
+          alignItems="center"
+        >
           <Box className={classes.flowStep}>
             <Box display="flex" justifyContent="center" alignItems="center">
               {getStepIcon(steps[0].status)}
             </Box>
-            <Typography variant="caption" display="block">Services</Typography>
+            <Typography variant="caption" display="block">
+              Services
+            </Typography>
             <Typography variant="caption" color="textSecondary" display="block">
               {servicesDeployed} deployed
             </Typography>
@@ -235,7 +261,9 @@ export const DataFlowVisualization: React.FC<DataFlowVisualizationProps> = ({
             <Box display="flex" justifyContent="center" alignItems="center">
               {getStepIcon(steps[1].status)}
             </Box>
-            <Typography variant="caption" display="block">OTel</Typography>
+            <Typography variant="caption" display="block">
+              OTel
+            </Typography>
             <Typography variant="caption" color="textSecondary" display="block">
               Tracing
             </Typography>
@@ -245,7 +273,9 @@ export const DataFlowVisualization: React.FC<DataFlowVisualizationProps> = ({
             <Box display="flex" justifyContent="center" alignItems="center">
               {getStepIcon(steps[2].status)}
             </Box>
-            <Typography variant="caption" display="block">Jaeger</Typography>
+            <Typography variant="caption" display="block">
+              Jaeger
+            </Typography>
             <Typography variant="caption" color="textSecondary" display="block">
               {tracesCollected} traces
             </Typography>
@@ -255,7 +285,9 @@ export const DataFlowVisualization: React.FC<DataFlowVisualizationProps> = ({
             <Box display="flex" justifyContent="center" alignItems="center">
               {getStepIcon(steps[3].status)}
             </Box>
-            <Typography variant="caption" display="block">Frontend</Typography>
+            <Typography variant="caption" display="block">
+              Frontend
+            </Typography>
             <Typography variant="caption" color="textSecondary" display="block">
               Display
             </Typography>
@@ -273,10 +305,12 @@ export const DataFlowVisualization: React.FC<DataFlowVisualizationProps> = ({
                 {step.name}
               </StepLabel>
               <StepContent className={classes.stepContent}>
-                <Box className={`${classes.statusBox} ${getStatusClass(step.status)}`}>
-                  <Typography variant="body2">
-                    {step.message}
-                  </Typography>
+                <Box
+                  className={`${classes.statusBox} ${getStatusClass(
+                    step.status,
+                  )}`}
+                >
+                  <Typography variant="body2">{step.message}</Typography>
                   {step.status === 'loading' && (
                     <Box mt={1}>
                       <LinearProgress />
@@ -307,14 +341,20 @@ export const DataFlowVisualization: React.FC<DataFlowVisualizationProps> = ({
           <Grid item xs={12} sm={6}>
             <Alert severity={jaegerHealthy ? 'success' : 'error'}>
               <Typography variant="body2">
-                <strong>Jaeger:</strong> {jaegerHealthy ? 'Connected' : 'Disconnected'}
+                <strong>Jaeger:</strong>{' '}
+                {jaegerHealthy ? 'Connected' : 'Disconnected'}
               </Typography>
             </Alert>
           </Grid>
           <Grid item xs={12} sm={6}>
-            <Alert severity={tracesCollected > 0 && jaegerHealthy ? 'success' : 'info'}>
+            <Alert
+              severity={
+                tracesCollected > 0 && jaegerHealthy ? 'success' : 'info'
+              }
+            >
               <Typography variant="body2">
-                <strong>Frontend:</strong> {tracesCollected > 0 ? 'Displaying data' : 'Waiting for data'}
+                <strong>Frontend:</strong>{' '}
+                {tracesCollected > 0 ? 'Displaying data' : 'Waiting for data'}
               </Typography>
             </Alert>
           </Grid>
@@ -322,18 +362,18 @@ export const DataFlowVisualization: React.FC<DataFlowVisualizationProps> = ({
 
         {/* Quick Links */}
         <Box mt={2} display="flex" style={{ gap: 8 }}>
-          <Button 
-            size="small" 
+          <Button
+            size="small"
             startIcon={<RefreshIcon />}
             onClick={() => window.location.reload()}
           >
             Refresh
           </Button>
           {jaegerHealthy && (
-            <Button 
-              size="small" 
-              href="http://localhost:16686" 
-              target="_blank" 
+            <Button
+              size="small"
+              href="http://localhost:16686"
+              target="_blank"
               rel="noopener noreferrer"
             >
               Open Jaeger

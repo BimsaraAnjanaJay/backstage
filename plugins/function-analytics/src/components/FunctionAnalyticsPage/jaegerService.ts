@@ -25,13 +25,15 @@ export const fetchJaegerServiceMetrics = async (
   serviceName: string,
   backend: TracingBackendConfig,
   timeRange: string,
-  fetchApi?: { fetch: typeof fetch }
+  fetchApi?: { fetch: typeof fetch },
 ): Promise<ServiceMetrics> => {
   // eslint-disable-next-line no-console
   console.log(`🔍 Fetching metrics for service: ${serviceName}`);
-  
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-  
+
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+  };
+
   const endTime = Date.now() * 1000; // microseconds
   const timeRangeToMicros: Record<string, number> = {
     '5m': 5 * 60 * 1000 * 1000,
@@ -41,28 +43,39 @@ export const fetchJaegerServiceMetrics = async (
   };
   const rangeMicros = timeRangeToMicros[timeRange] ?? timeRangeToMicros['1h'];
   const startTime = endTime - rangeMicros;
-  
+
   // eslint-disable-next-line no-console
-  console.log(`🕐 Time range: ${new Date(startTime/1000).toISOString()} to ${new Date(endTime/1000).toISOString()}`);
+  console.log(
+    `🕐 Time range: ${new Date(startTime / 1000).toISOString()} to ${new Date(
+      endTime / 1000,
+    ).toISOString()}`,
+  );
 
   try {
-    const baseUrl = backend.endpoint && backend.endpoint !== 'http://localhost:16686'
-      ? backend.endpoint.replace(/\/$/, '')
-      : '/api/proxy/jaeger';
-    const tracesUrl = `${baseUrl}/api/traces?service=${encodeURIComponent(serviceName)}&start=${startTime}&end=${endTime}&limit=200`;
+    const baseUrl =
+      backend.endpoint && backend.endpoint !== 'http://localhost:16686'
+        ? backend.endpoint.replace(/\/$/, '')
+        : '/api/proxy/jaeger';
+    const tracesUrl = `${baseUrl}/api/traces?service=${encodeURIComponent(
+      serviceName,
+    )}&start=${startTime}&end=${endTime}&limit=200`;
     // eslint-disable-next-line no-console
     console.log(`📡 Fetching from: ${tracesUrl}`);
-    
-    const tracesResponse = fetchApi 
+
+    const tracesResponse = fetchApi
       ? await fetchApi.fetch(tracesUrl, { headers })
       : await fetch(tracesUrl, { headers });
 
     // eslint-disable-next-line no-console
-    console.log(`📊 Response status: ${tracesResponse.status} ${tracesResponse.statusText}`);
+    console.log(
+      `📊 Response status: ${tracesResponse.status} ${tracesResponse.statusText}`,
+    );
 
     if (!tracesResponse.ok) {
       // eslint-disable-next-line no-console
-      console.warn(`❌ Failed to fetch traces for ${serviceName}: ${tracesResponse.status} ${tracesResponse.statusText}`);
+      console.warn(
+        `❌ Failed to fetch traces for ${serviceName}: ${tracesResponse.status} ${tracesResponse.statusText}`,
+      );
       return {
         serviceName,
         totalCalls: 0,
@@ -77,7 +90,9 @@ export const fetchJaegerServiceMetrics = async (
     const contentType = tracesResponse.headers.get('content-type');
     if (!contentType || !contentType.includes('application/json')) {
       // eslint-disable-next-line no-console
-      console.warn(`❌ Service ${serviceName} returned non-JSON response (${contentType}). Service may not exist in Jaeger.`);
+      console.warn(
+        `❌ Service ${serviceName} returned non-JSON response (${contentType}). Service may not exist in Jaeger.`,
+      );
       return {
         serviceName,
         totalCalls: 0,
@@ -93,7 +108,10 @@ export const fetchJaegerServiceMetrics = async (
       tracesData = await tracesResponse.json();
     } catch (jsonError) {
       // eslint-disable-next-line no-console
-      console.error(`❌ Failed to parse JSON for service ${serviceName}:`, jsonError);
+      console.error(
+        `❌ Failed to parse JSON for service ${serviceName}:`,
+        jsonError,
+      );
       return {
         serviceName,
         totalCalls: 0,
@@ -123,33 +141,67 @@ export const fetchJaegerServiceMetrics = async (
 
     traces.forEach((trace: any) => {
       if (!trace.spans) return;
-      
+
+      // Map spanID to span for parent lookup
+      const spanMap = new Map();
+      trace.spans.forEach((s: any) => spanMap.set(s.spanID, s));
+
       trace.spans.forEach((span: any) => {
         const process = trace.processes?.[span.processID];
         const spanServiceName = process?.serviceName;
-        
+
         if (spanServiceName === serviceName) {
-          const functionName = extractGeneralFunctionName(span.operationName, span.tags || []);
+          const functionName = extractGeneralFunctionName(
+            span.operationName,
+            span.tags || [],
+          );
           const key = `${serviceName}-${functionName}`;
 
           if (!functionMetrics.has(key)) {
-            const httpMethod = span.tags?.find((tag: any) => tag.key === 'http.method')?.value;
-            const httpPath = span.tags?.find((tag: any) => tag.key === 'http.url')?.value;
-            const grpcMethod = span.tags?.find((tag: any) => tag.key === 'rpc.method')?.value;
-            const messageQueue = span.tags?.find((tag: any) => tag.key === 'messaging.system')?.value;
-            const eventType = span.tags?.find((tag: any) => tag.key === 'event.type')?.value;
-            const databaseOp = span.tags?.find((tag: any) => tag.key === 'db.operation')?.value;
-            const version = span.tags?.find((tag: any) => tag.key === 'service.version')?.value;
-            const namespace = span.tags?.find((tag: any) => tag.key === 'k8s.namespace')?.value;
-            
-            let microserviceType: 'api' | 'service' | 'worker' | 'scheduler' | 'gateway' = 'service';
+            const httpMethod = span.tags?.find(
+              (tag: any) => tag.key === 'http.method',
+            )?.value;
+            const httpPath = span.tags?.find(
+              (tag: any) => tag.key === 'http.url',
+            )?.value;
+            const grpcMethod = span.tags?.find(
+              (tag: any) => tag.key === 'rpc.method',
+            )?.value;
+            const messageQueue = span.tags?.find(
+              (tag: any) => tag.key === 'messaging.system',
+            )?.value;
+            const eventType = span.tags?.find(
+              (tag: any) => tag.key === 'event.type',
+            )?.value;
+            const databaseOp = span.tags?.find(
+              (tag: any) => tag.key === 'db.operation',
+            )?.value;
+            const version = span.tags?.find(
+              (tag: any) => tag.key === 'service.version',
+            )?.value;
+            const namespace = span.tags?.find(
+              (tag: any) => tag.key === 'k8s.namespace',
+            )?.value;
+
+            let microserviceType:
+              | 'api'
+              | 'service'
+              | 'worker'
+              | 'scheduler'
+              | 'gateway' = 'service';
             if (httpMethod && httpPath) {
               microserviceType = 'api';
             } else if (messageQueue) {
               microserviceType = 'worker';
-            } else if (span.operationName.includes('schedule') || span.operationName.includes('cron')) {
+            } else if (
+              span.operationName.includes('schedule') ||
+              span.operationName.includes('cron')
+            ) {
               microserviceType = 'scheduler';
-            } else if (span.operationName.includes('gateway') || span.operationName.includes('proxy')) {
+            } else if (
+              span.operationName.includes('gateway') ||
+              span.operationName.includes('proxy')
+            ) {
               microserviceType = 'gateway';
             }
 
@@ -183,43 +235,70 @@ export const fetchJaegerServiceMetrics = async (
           metric.callCount++;
           metric.latency += span.duration || 0;
 
-          const hasError = span.tags?.some((tag: any) => 
-            (tag.key === 'error' && tag.value === true) ||
-            (tag.key === 'http.status_code' && parseInt(tag.value, 10) >= 400)
+          const hasError = span.tags?.some(
+            (tag: any) =>
+              (tag.key === 'error' && tag.value === true) ||
+              (tag.key === 'http.status_code' &&
+                parseInt(tag.value, 10) >= 400),
           );
-          
+
           if (hasError) {
             metric.errorRate++;
           }
 
-          const childSpans = trace.spans.filter((childSpan: any) => 
-            childSpan.references?.some((ref: any) => 
-              ref.refType === 'CHILD_OF' && ref.spanID === span.spanID
-            )
+          // --- Determine Caller (Parent) ---
+          let callerService: string | null = null;
+          const parentRef = span.references?.find(
+            (ref: any) =>
+              ref.refType === 'CHILD_OF' || ref.refType === 'FOLLOWS_FROM',
+          );
+
+          if (parentRef) {
+            const parentSpan = spanMap.get(parentRef.spanID);
+            if (parentSpan) {
+              const parentProcess = trace.processes?.[parentSpan.processID];
+              callerService = parentProcess?.serviceName;
+            }
+          }
+
+          // If no parent span in this trace, we assume it's an external entry point (e.g. from Frontend/Gateway)
+          if (!callerService) {
+            metric.externalCalls++;
+            metric.type = 'external';
+          } else if (callerService === serviceName) {
+            // Internal call (called by another function in the same service)
+            metric.internalCalls++;
+          } else {
+            // External call (called by a different service)
+            metric.externalCalls++;
+            metric.type = 'external';
+
+            if (!metric.dependencies.includes(callerService)) {
+              metric.dependencies.push(callerService);
+            }
+          }
+
+          // Maintain the outbound tracking logic as well for DataFlow visuals
+          const childSpans = trace.spans.filter((childSpan: any) =>
+            childSpan.references?.some(
+              (ref: any) =>
+                ref.refType === 'CHILD_OF' && ref.spanID === span.spanID,
+            ),
           );
 
           childSpans.forEach((childSpan: any) => {
             const childProcess = trace.processes?.[childSpan.processID];
             const childServiceName = childProcess?.serviceName;
-            
+
             if (childServiceName && childServiceName !== serviceName) {
-              metric.externalCalls++;
-              metric.type = 'external';
-              
               if (!metric.externalCallTargets.includes(childServiceName)) {
                 metric.externalCallTargets.push(childServiceName);
               }
-              
-              if (!metric.dependencies.includes(childServiceName)) {
-                metric.dependencies.push(childServiceName);
-              }
-              
-              metric.externalCallFrequency[childServiceName] = 
+
+              metric.externalCallFrequency[childServiceName] =
                 (metric.externalCallFrequency[childServiceName] || 0) + 1;
-                
+
               metric.crossServiceCallLatency += childSpan.duration || 0;
-            } else if (childServiceName === serviceName) {
-              metric.internalCalls++;
             }
           });
         }
@@ -228,17 +307,28 @@ export const fetchJaegerServiceMetrics = async (
 
     const functions = Array.from(functionMetrics.values()).map(metric => ({
       ...metric,
-      latency: metric.callCount > 0 ? metric.latency / metric.callCount / 1000 : 0,
-      errorRate: metric.callCount > 0 ? (metric.errorRate / metric.callCount) * 100 : 0,
-      crossServiceCallLatency: metric.externalCalls > 0 ? metric.crossServiceCallLatency / metric.externalCalls / 1000 : 0,
+      latency:
+        metric.callCount > 0 ? metric.latency / metric.callCount / 1000 : 0,
+      errorRate:
+        metric.callCount > 0 ? (metric.errorRate / metric.callCount) * 100 : 0,
+      crossServiceCallLatency:
+        metric.externalCalls > 0
+          ? metric.crossServiceCallLatency / metric.externalCalls / 1000
+          : 0,
     }));
 
     const totalCalls = functions.reduce((sum, f) => sum + f.callCount, 0);
-    const avgLatency = functions.length > 0 
-      ? functions.reduce((sum, f) => sum + f.latency * f.callCount, 0) / totalCalls 
-      : 0;
-    const totalErrors = functions.reduce((sum, f) => sum + (f.errorRate * f.callCount / 100), 0);
-    const overallErrorRate = totalCalls > 0 ? (totalErrors / totalCalls) * 100 : 0;
+    const avgLatency =
+      functions.length > 0
+        ? functions.reduce((sum, f) => sum + f.latency * f.callCount, 0) /
+          totalCalls
+        : 0;
+    const totalErrors = functions.reduce(
+      (sum, f) => sum + (f.errorRate * f.callCount) / 100,
+      0,
+    );
+    const overallErrorRate =
+      totalCalls > 0 ? (totalErrors / totalCalls) * 100 : 0;
 
     return {
       serviceName,
