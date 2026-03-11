@@ -1,0 +1,20 @@
+{
+    "name": "lightweight-otel-demo",
+    "version": "1.0.0",
+    "description": "Lightweight Node.js microservices for OTel tracing evaluation",
+    "main": "index.js",
+    "scripts": {
+        "start:gateway": "node --require ./instrument.js gateway.js",
+        "start:auth": "node --require ./instrument.js auth.js",
+        "start:product": "node --require ./instrument.js product.js",
+        "start:traffic": "node traffic-generator.js"
+    },
+    "dependencies": {
+        "@opentelemetry/api": "^1.8.0",
+        "@opentelemetry/auto-instrumentations-node": "^0.47.0",
+        "@opentelemetry/exporter-trace-otlp-http": "^0.52.0",
+        "@opentelemetry/sdk-node": "^0.52.0",
+        "axios": "^1.6.8",
+        "express": "^4.19.2"
+    }
+}

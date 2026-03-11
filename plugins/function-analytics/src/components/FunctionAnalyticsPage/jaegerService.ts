@@ -26,6 +26,7 @@ export const fetchJaegerServiceMetrics = async (
   backend: TracingBackendConfig,
   timeRange: string,
   fetchApi?: { fetch: typeof fetch },
+  proxyBaseUrl?: string,
 ): Promise<ServiceMetrics> => {
   // eslint-disable-next-line no-console
   console.log(`🔍 Fetching metrics for service: ${serviceName}`);
@@ -55,10 +56,14 @@ export const fetchJaegerServiceMetrics = async (
     const baseUrl =
       backend.endpoint && backend.endpoint !== 'http://localhost:16686'
         ? backend.endpoint.replace(/\/$/, '')
-        : '/api/proxy/jaeger';
+        : (proxyBaseUrl ? `${proxyBaseUrl}/jaeger` : '/api/proxy/jaeger');
+
+    let lookback = timeRange.toLowerCase();
+    if (lookback === '7d') lookback = '168h'; // Jaeger supports hours better
+
     const tracesUrl = `${baseUrl}/api/traces?service=${encodeURIComponent(
       serviceName,
-    )}&start=${startTime}&end=${endTime}&limit=200`;
+    )}&lookback=${lookback}&limit=200`;
     // eslint-disable-next-line no-console
     console.log(`📡 Fetching from: ${tracesUrl}`);
 
@@ -321,7 +326,7 @@ export const fetchJaegerServiceMetrics = async (
     const avgLatency =
       functions.length > 0
         ? functions.reduce((sum, f) => sum + f.latency * f.callCount, 0) /
-          totalCalls
+        totalCalls
         : 0;
     const totalErrors = functions.reduce(
       (sum, f) => sum + (f.errorRate * f.callCount) / 100,

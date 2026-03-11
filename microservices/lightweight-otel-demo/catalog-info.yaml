@@ -1,0 +1,65 @@
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: lightweight-gateway
+  description: Lightweight Gateway Service for OTel Evaluation
+  tags:
+    - nodejs
+    - otel
+  annotations:
+    backstage.io/techdocs-ref: dir:.
+    github.com/project-slug: BimsaraAnjanaJay/lightweight-otel-demo
+    jaegertracing.io/service-name: gateway-service
+    function-analytics/mock-endpoints: "/api/checkout"
+spec:
+  type: service
+  lifecycle: experimental
+  owner: user:guest
+  system: lightweight-otel-system
+---
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: lightweight-auth
+  description: Lightweight Auth Service for OTel Evaluation
+  tags:
+    - nodejs
+    - otel
+  annotations:
+    backstage.io/techdocs-ref: dir:.
+    github.com/project-slug: BimsaraAnjanaJay/lightweight-otel-demo
+    jaegertracing.io/service-name: auth-service
+    function-analytics/mock-endpoints: "/validate?token=demo"
+spec:
+  type: service
+  lifecycle: experimental
+  owner: user:guest
+  system: lightweight-otel-system
+---
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: lightweight-product
+  description: Lightweight Product Service for OTel Evaluation
+  tags:
+    - nodejs
+    - otel
+  annotations:
+    backstage.io/techdocs-ref: dir:.
+    github.com/project-slug: BimsaraAnjanaJay/lightweight-otel-demo
+    jaegertracing.io/service-name: product-service
+    function-analytics/mock-endpoints: "/products"
+spec:
+  type: service
+  lifecycle: experimental
+  owner: user:guest
+  system: lightweight-otel-system
+
+---
+apiVersion: backstage.io/v1alpha1
+kind: System
+metadata:
+  name: lightweight-otel-system
+  description: A minimalist microservice ecosystem designed specifically for Function Relocation Analyzer evaluation.
+spec:
+  owner: user:guest

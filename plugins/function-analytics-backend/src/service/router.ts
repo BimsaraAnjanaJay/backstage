@@ -23,7 +23,6 @@ import * as fs from 'fs-extra';
 import * as path from 'path';
 import * as yaml from 'yaml';
 import { spawn } from 'child_process';
-import { preprocessTraces } from '../lib/preprocess';
 import { analyzeFunctionCalls } from '../lib/analysis';
 import { applyDecisionLogic } from '../lib/decision';
 
@@ -57,40 +56,97 @@ export async function createRouter(
   router.get('/analyze', async (req, res) => {
     try {
       const service = (req.query.service as string) || 'all';
-      logger.info(`Analyzing function calls for service: ${service}`);
+      const lookbackParam = (req.query.lookback as string) || '1h';
 
-      // Construct Jaeger API URL through Backstage proxy
-      const jaegerUrl = `http://localhost:7007/api/proxy/jaeger/api/traces?service=${service}&limit=500`;
+      let lookback = lookbackParam.toLowerCase();
+      if (lookback === '7d') lookback = '168h';
 
-      logger.info(`Fetching traces from Jaeger: ${jaegerUrl}`);
+      logger.info(`Analyzing function calls for service: ${service} with lookback: ${lookback}`);
 
-      // Fetch traces from Jaeger
-      const response = await fetch(jaegerUrl);
+      let allTraces: any[] = [];
+      const jaegerBase = 'http://localhost:16686/api';
 
-      if (!response.ok) {
-        throw new Error(
-          `Jaeger API returned ${response.status}: ${response.statusText}`,
+      // Helper: fetch with a 5-second timeout
+      const fetchWithTimeout = async (url: string, timeoutMs = 5000) => {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
+        try {
+          const r = await fetch(url, { signal: controller.signal as any });
+          return r;
+        } finally {
+          clearTimeout(timer);
+        }
+      };
+
+      if (service === 'all' || service === '') {
+        // Fetch list of services from Jaeger
+        logger.info('Fetching list of all services from Jaeger');
+        let services: string[] = [];
+        try {
+          const servicesRes = await fetchWithTimeout(`${jaegerBase}/services`);
+          if (servicesRes.ok) {
+            const servicesData = await servicesRes.json();
+            services = (servicesData.data || []) as string[];
+          }
+        } catch (e) {
+          logger.warn(`Could not fetch service list: ${e}`);
+        }
+
+        // Filter out internal/noisy services
+        const targetServices = services.filter(
+          svc =>
+            !svc.startsWith('jaeger') &&
+            !svc.startsWith('unknown_service:') &&
+            svc !== 'jaeger-query' &&
+            svc !== 'jaeger-all-in-one',
         );
+
+        logger.info(`Fetching traces for ${targetServices.length} services: ${targetServices.join(', ')}`);
+
+        // Fetch traces for each real service in parallel with timeout
+        const traceResults = await Promise.allSettled(
+          targetServices.map(async svc => {
+            const jaegerUrl = `${jaegerBase}/traces?service=${encodeURIComponent(svc)}&limit=500&lookback=${lookback}`;
+            const r = await fetchWithTimeout(jaegerUrl);
+            logger.info(`[Backend Step 1] Fetching raw traces for ${svc} via: ${jaegerUrl}`);
+            if (!r.ok) return [];
+            const d = await r.json();
+            logger.info(`[Backend Step 1] Jaeger returned ${d.data?.length || 0} span records for ${svc}`);
+            return (d.data || []) as any[];
+          }),
+        );
+
+        // Merge, deduplicate by traceID
+        for (const result of traceResults) {
+          if (result.status === 'fulfilled') {
+            for (const trace of result.value) {
+              if (!allTraces.some(t => t.traceID === trace.traceID)) {
+                allTraces.push(trace);
+              }
+            }
+          }
+        }
+      } else {
+        // Single named service
+        const jaegerUrl = `${jaegerBase}/traces?service=${encodeURIComponent(service)}&limit=500&lookback=${lookback}`;
+        logger.info(`Fetching traces from Jaeger: ${jaegerUrl}`);
+        const response = await fetchWithTimeout(jaegerUrl);
+        if (!response.ok) {
+          throw new Error(`Jaeger API returned ${response.status}: ${response.statusText}`);
+        }
+        const data = await response.json();
+        allTraces = Array.isArray(data) ? data : data.data || [];
       }
 
-      const data = await response.json();
-
-      // Ensure data structure is correct
-      const traces = Array.isArray(data) ? data : data.data || [];
-
-      logger.info(`Fetched ${traces.length} traces from Jaeger`);
-
-      // Step 1: Preprocess traces
-      const cleaned = preprocessTraces(traces);
-      logger.info(`Preprocessed ${cleaned.length} function calls`);
+      logger.info(`Fetched ${allTraces.length} unique traces from Jaeger`);
 
       // Step 2: Analyze function calls
-      const analyzed = analyzeFunctionCalls(cleaned);
-      logger.info(`Analyzed ${analyzed.length} unique functions`);
+      const analyzed = analyzeFunctionCalls(allTraces);
+      logger.info(`[Backend Step 2] Trace Parser found ${analyzed.length} unique functions. Preview: ${JSON.stringify(analyzed).substring(0, 300)}`);
 
       // Step 3: Apply decision logic
       const decisions = applyDecisionLogic(analyzed);
-      logger.info(`Generated ${decisions.length} relocation recommendations`);
+      logger.info(`[Backend Step 3] Final Relocation Decisions generated: ${JSON.stringify(decisions).substring(0, 300)}`);
 
       return res.json(decisions);
     } catch (error) {
@@ -398,12 +454,11 @@ export async function createRouter(
 
   // POST /service/deploy-and-trace - Auto-deploy service and generate traces
   router.post('/service/deploy-and-trace', async (req, res) => {
-    const { serviceName, jaegerServiceName, repoName } = req.body;
+    const { serviceName, jaegerServiceName, repoName, testEndpoints } = req.body;
 
     try {
       logger.info(
-        `🚀 Auto-deploying service: ${serviceName} (Jaeger: ${
-          jaegerServiceName || serviceName
+        `🚀 Auto-deploying service: ${serviceName} (Jaeger: ${jaegerServiceName || serviceName
         })`,
       );
 
@@ -434,26 +489,35 @@ export async function createRouter(
       );
       const composeFile = 'docker-compose.otel.yml';
 
-      if (!(await fs.pathExists(composeFilePath))) {
+      if (true) {
         logger.info('📝 Generating docker-compose.otel.yml with Jaeger...');
 
         // Detect services in the repository
         const services = await detectServices(microservicesDir);
 
         if (services.length === 0) {
-          return res.status(404).json({
-            success: false,
-            error:
-              'No services detected in repository. Check if the repository has valid microservices.',
-          });
+          const rootComposePath = path.join(microservicesDir, 'docker-compose.yml');
+          if (await fs.pathExists(rootComposePath)) {
+            logger.info('📝 Root docker-compose.yml found! Using it directly and injecting OTEL bypass...');
+            let composeContent = await fs.readFile(rootComposePath, 'utf-8');
+            // Inject detector bypass and append /v1/traces for correct node-fetch HTTP trace exporting
+            composeContent = composeContent.replace(
+              /OTEL_EXPORTER_OTLP_ENDPOINT/g,
+              'OTEL_NODE_RESOURCE_DETECTORS=env,host,os,process\n      - OTEL_EXPORTER_OTLP_ENDPOINT'
+            ).replace(/http:\/\/jaeger:4318(?![\/\w])/g, 'http://jaeger:4318/v1/traces');
+            await fs.writeFile(composeFilePath, composeContent);
+          } else {
+            return res.status(404).json({
+              success: false,
+              error: 'No services detected in repository. Check if the repository has valid microservices.',
+            });
+          }
+        } else {
+          // Generate docker-compose with Jaeger
+          const dockerComposeContent = generateDockerCompose(services);
+          await fs.writeFile(composeFilePath, dockerComposeContent);
+          logger.info(`✅ Generated docker-compose.otel.yml with ${services.length} services + Jaeger`);
         }
-
-        // Generate docker-compose with Jaeger
-        const dockerComposeContent = generateDockerCompose(services);
-        await fs.writeFile(composeFilePath, dockerComposeContent);
-        logger.info(
-          `✅ Generated docker-compose.otel.yml with ${services.length} services + Jaeger`,
-        );
       } else {
         logger.info('✅ docker-compose.otel.yml already exists');
       }
@@ -536,14 +600,51 @@ export async function createRouter(
       const composeData = yaml.parse(composeContent);
 
       let servicePort = 5000;
-      const serviceConfig = composeData.services?.[serviceName];
+      let serviceConfig = composeData.services?.[serviceName];
+      let actualServiceName = serviceName;
+
+      if (!serviceConfig) {
+        // Try fuzzy matching first (ignore jaeger itself)
+        for (const [name, config] of Object.entries(composeData.services || {})) {
+          if (name.includes('jaeger') || (config as any).image?.includes('jaeger')) continue;
+          const configObj = config as any;
+          const containerName = configObj.container_name || '';
+
+          if (
+            serviceName.includes(name) ||
+            name.includes(serviceName.replace('lightweight-', '')) ||
+            containerName.includes(serviceName.replace('lightweight-', ''))
+          ) {
+            serviceConfig = config;
+            actualServiceName = name;
+            logger.info(`Fuzzy matched service '${serviceName}' to compose service '${name}'.`);
+            break;
+          }
+        }
+      }
+
+      if (!serviceConfig) {
+        // Fallback: look for the first non-jaeger service that actually exposes ports (e.g. gateway)
+        for (const [name, config] of Object.entries(composeData.services || {})) {
+          if (name.includes('jaeger') || (config as any).image?.includes('jaeger')) continue;
+          if ((config as any).ports) {
+            serviceConfig = config;
+            actualServiceName = name;
+            logger.info(`Service '${serviceName}' not found in compose file. Using fallback service '${name}' for trace generation.`);
+            break;
+          }
+        }
+      }
+
       if (serviceConfig?.ports) {
         const portMapping = Array.isArray(serviceConfig.ports)
           ? serviceConfig.ports[0]
           : serviceConfig.ports;
-        const portMatch = String(portMapping).match(/(\d+):/);
+        const portMatch = String(portMapping).match(/^(\d+):|:(\d+)$/);
+        // Usually ports are like "8080:8080". We want the host port (first match group) 
+        // fallback to second group if just one port is matched.
         if (portMatch) {
-          servicePort = parseInt(portMatch[1], 10);
+          servicePort = parseInt(portMatch[1] || portMatch[2], 10);
         }
       }
 
@@ -553,15 +654,37 @@ export async function createRouter(
 
       // Generate traces by making HTTP requests
       const serviceUrl = `http://localhost:${servicePort}`;
-      const endpoints = [
-        '/',
-        '/health',
-        '/api',
-        '/api/quote',
-        '/api/quotes',
-        '/api/todos',
-        '/api/users',
-      ];
+      // Dynamically find endpoints by scanning the service's source code files, 
+      // UNLESS the user explicitly provided testEndpoints via catalog annotations.
+      let endpoints: string[] = Array.isArray(testEndpoints) && testEndpoints.length > 0
+        ? testEndpoints
+        : ['/', '/health'];
+
+      if (!testEndpoints || testEndpoints.length === 0) {
+        try {
+          const files = await fs.readdir(path.join(microservicesDir, actualServiceName));
+          for (const file of files) {
+            if (file.endsWith('.js') || file.endsWith('.ts')) {
+              const content = await fs.readFile(path.join(microservicesDir, actualServiceName, file), 'utf8');
+              // Match app.get('/some/path', ...) or router.post(...)
+              const routeRegex = /app\.(get|post|put|delete|patch)\(['"`]([\/\w\-\{\}\?\=]+)['"`]/g;
+              let match;
+              while ((match = routeRegex.exec(content)) !== null) {
+                let endpoint = match[2];
+                // Remove query params and path params for simple pinging
+                endpoint = endpoint.split('?')[0].replace(/:\w+/g, '123'); // Replace :id with 123
+                if (!endpoints.includes(endpoint)) {
+                  endpoints.push(endpoint);
+                }
+              }
+            }
+          }
+        } catch (e) {
+          logger.warn(`Could not automatically discover routes for ${actualServiceName}: ${e}`);
+        }
+      }
+
+      logger.info(`Discovered endpoints to trace for ${actualServiceName}: ${endpoints.join(', ')}`);
 
       let successCount = 0;
       for (let i = 0; i < 20; i++) {
@@ -586,7 +709,11 @@ export async function createRouter(
       await new Promise(resolve => setTimeout(resolve, 3000));
 
       // Verify traces in Jaeger
-      const targetServiceName = jaegerServiceName || serviceName;
+      let targetServiceName = jaegerServiceName || actualServiceName;
+      if (serviceConfig?.environment) {
+        const otelEnv = serviceConfig.environment.find((e: string) => typeof e === 'string' && e.startsWith('OTEL_SERVICE_NAME='));
+        if (otelEnv) targetServiceName = otelEnv.split('=')[1];
+      }
       const jaegerUrl = `http://localhost:16686/api/traces?service=${encodeURIComponent(
         targetServiceName,
       )}&lookback=5m&limit=100`;
@@ -839,9 +966,8 @@ export async function createRouter(
           logger.error(`❌ Failed to clone repository: ${cloneErr}`);
           return res.status(500).json({
             success: false,
-            error: `Failed to clone repository: ${
-              cloneErr instanceof Error ? cloneErr.message : String(cloneErr)
-            }`,
+            error: `Failed to clone repository: ${cloneErr instanceof Error ? cloneErr.message : String(cloneErr)
+              }`,
           });
         }
       }
@@ -850,20 +976,22 @@ export async function createRouter(
 
       // Detect all services
       const services = await detectServices(microservicesDir);
+      let usingRootCompose = false;
+
       if (services.length === 0) {
-        return res
-          .status(400)
-          .json({
+        const rootComposePath = path.join(microservicesDir, 'docker-compose.yml');
+        if (await fs.pathExists(rootComposePath)) {
+          logger.info('📝 Root docker-compose.yml found for full deployment!');
+          usingRootCompose = true;
+        } else {
+          return res.status(400).json({
             success: false,
             error: 'No services detected in repository',
           });
+        }
+      } else {
+        logger.info(`✅ Detected ${services.length} services: ${services.map(s => s.name).join(', ')}`);
       }
-
-      logger.info(
-        `✅ Detected ${services.length} services: ${services
-          .map(s => s.name)
-          .join(', ')}`,
-      );
 
       // Fix Dockerfiles
       logger.info('🔧 Fixing Dockerfiles...');
@@ -874,10 +1002,19 @@ export async function createRouter(
         microservicesDir,
         'docker-compose.otel.yml',
       );
-      if (!(await fs.pathExists(composeFilePath))) {
+      if (true) {
         logger.info('📝 Generating docker-compose.otel.yml...');
-        const dockerComposeContent = generateDockerCompose(services);
-        await fs.writeFile(composeFilePath, dockerComposeContent);
+        if (usingRootCompose) {
+          let composeContent = await fs.readFile(path.join(microservicesDir, 'docker-compose.yml'), 'utf-8');
+          composeContent = composeContent.replace(
+            /OTEL_EXPORTER_OTLP_ENDPOINT/g,
+            'OTEL_NODE_RESOURCE_DETECTORS=env,host,os,process\n      - OTEL_EXPORTER_OTLP_ENDPOINT'
+          );
+          await fs.writeFile(composeFilePath, composeContent);
+        } else {
+          const dockerComposeContent = generateDockerCompose(services);
+          await fs.writeFile(composeFilePath, dockerComposeContent);
+        }
       }
 
       logger.info('📦 Starting all containers...');
@@ -1126,8 +1263,7 @@ export async function createRouter(
         traceList.slice(0, 10).forEach((trace: any, idx: number) => {
           console.log(`\n[Trace ${idx + 1}] ID: ${trace.traceID}`);
           console.log(
-            `  Duration: ${trace.duration}µs | Spans: ${
-              trace.spans?.length || 0
+            `  Duration: ${trace.duration}µs | Spans: ${trace.spans?.length || 0
             }`,
           );
           trace.spans?.forEach((span: any) => {
@@ -1477,7 +1613,8 @@ function generateDockerCompose(services: any[]): string {
         context: `./${service.path}`,
         dockerfile: 'Dockerfile',
       },
-      container_name: service.name,
+      image: `${service.name.toLowerCase()}:latest`,
+      container_name: service.name.toLowerCase(),
       environment: [
         'OTEL_TRACES_EXPORTER=otlp',
         `OTEL_SERVICE_NAME=${service.name}`,
@@ -1491,6 +1628,7 @@ function generateDockerCompose(services: any[]): string {
     if (service.language === 'nodejs') {
       serviceConfig.environment.push(
         'OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318',
+        'OTEL_NODE_RESOURCE_DETECTORS=env,host,os,process'
       );
       const entrypoint = service.entrypoint || 'index.js';
       serviceConfig.command = `sh -c "npm install && npm install @opentelemetry/api @opentelemetry/auto-instrumentations-node @opentelemetry/sdk-node && node --require @opentelemetry/auto-instrumentations-node/register ${entrypoint}"`;
@@ -1651,11 +1789,11 @@ Write-Host "\\n✅ All services started!" -ForegroundColor Green
 Write-Host "\\n📊 Access Points:" -ForegroundColor Cyan
 Write-Host "  Jaeger UI: http://localhost:16686" -ForegroundColor White
 ${services
-  .map(
-    (s: any) =>
-      `Write-Host "  ${s.name}: http://localhost:${s.port}" -ForegroundColor White`,
-  )
-  .join('\n')}
+      .map(
+        (s: any) =>
+          `Write-Host "  ${s.name}: http://localhost:${s.port}" -ForegroundColor White`,
+      )
+      .join('\n')}
 Write-Host "  Function Analytics: http://localhost:3000/function-analytics" -ForegroundColor White
 `;
 }
@@ -1677,8 +1815,8 @@ echo ""
 echo "📊 Access Points:"
 echo "  Jaeger UI: http://localhost:16686"
 ${services
-  .map((s: any) => `echo "  ${s.name}: http://localhost:${s.port}"`)
-  .join('\n')}
+      .map((s: any) => `echo "  ${s.name}: http://localhost:${s.port}"`)
+      .join('\n')}
 echo "  Function Analytics: http://localhost:3000/function-analytics"
 `;
 }

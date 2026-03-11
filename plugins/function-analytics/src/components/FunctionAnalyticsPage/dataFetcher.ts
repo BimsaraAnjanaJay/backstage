@@ -30,9 +30,10 @@ const fetchServiceMetricsFromBackend = async (
   serviceName: string,
   backend: TracingBackendConfig,
   timeRange: string,
-  fetchApi: { fetch: typeof fetch }
+  fetchApi: { fetch: typeof fetch },
+  proxyBaseUrl?: string
 ): Promise<ServiceMetrics> => {
-  return fetchJaegerServiceMetrics(serviceName, backend, timeRange, fetchApi);
+  return fetchJaegerServiceMetrics(serviceName, backend, timeRange, fetchApi, proxyBaseUrl);
 };
 
 /**
@@ -44,14 +45,15 @@ export const fetchHybridServiceMetrics = async (
   manualServices: ManualServiceConfig[],
   defaultBackend: TracingBackendConfig,
   timeRange: string,
-  fetchApi: { fetch: typeof fetch }
+  fetchApi: { fetch: typeof fetch },
+  proxyBaseUrl?: string
 ): Promise<HybridServiceConfig[]> => {
   const hybridConfigs: HybridServiceConfig[] = [];
 
   // Process catalog services
   for (const catalogService of catalogServices) {
     try {
-      const backend = catalogService.tracingEndpoint 
+      const backend = catalogService.tracingEndpoint
         ? { ...defaultBackend, endpoint: catalogService.tracingEndpoint }
         : defaultBackend;
 
@@ -59,7 +61,8 @@ export const fetchHybridServiceMetrics = async (
         catalogService.jaegerServiceName || catalogService.serviceName,
         backend,
         timeRange,
-        fetchApi
+        fetchApi,
+        proxyBaseUrl
       );
 
       hybridConfigs.push({

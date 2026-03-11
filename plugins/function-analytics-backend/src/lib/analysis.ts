@@ -14,88 +14,133 @@
  * limitations under the License.
  */
 
-import { CleanedCall, FunctionAnalysis } from './types';
+import { FunctionAnalysis } from './types';
 
-/**
- * Analyzes function calls to determine internal vs external call patterns
- * and identify dominant callers
- * 
- * @param calls - Array of cleaned function calls
- * @returns Array of function analysis results
- */
-export function analyzeFunctionCalls(calls: CleanedCall[]): FunctionAnalysis[] {
-  // Group calls by function name and current service
-  const functionGroups = new Map<string, CleanedCall[]>();
+export function analyzeFunctionCalls(rawTraces: any[]): FunctionAnalysis[] {
+  const functionStats = new Map<string, any>();
 
-  for (const call of calls) {
-    const key = `${call.functionName}@${call.calleeService}`;
-    if (!functionGroups.has(key)) {
-      functionGroups.set(key, []);
-    }
-    functionGroups.get(key)!.push(call);
-  }
+  rawTraces.forEach(trace => {
+    // Build a map of spanID -> serviceName to quickly find caller services
+    const spanServiceMap = new Map<string, string>();
 
-  const results: FunctionAnalysis[] = [];
+    if (!trace.spans || !Array.isArray(trace.spans)) return;
 
-  for (const [key, functionCalls] of Array.from(functionGroups.entries())) {
-    const [functionName, currentService] = key.split('@');
+    trace.spans.forEach((span: any) => {
+      const process = trace.processes?.[span.processID];
+      if (process) {
+        spanServiceMap.set(span.spanID, process.serviceName);
+      }
+    });
 
-    let internalCalls = 0;
-    let externalCalls = 0;
-    const callerCounts = new Map<string, number>();
-    const internalLatencies: number[] = [];
-    const externalLatencies: number[] = [];
+    trace.spans.forEach((span: any) => {
+      const process = trace.processes?.[span.processID];
+      if (!process) return;
 
-    for (const call of functionCalls) {
-      const isInternal = call.callerService === call.calleeService;
+      const serviceName = process.serviceName;
+      let functionName = span.operationName;
 
-      if (isInternal) {
-        internalCalls++;
-        internalLatencies.push(call.latency);
-      } else {
-        externalCalls++;
-        externalLatencies.push(call.latency);
+      // Aggressive filter for standard @opentelemetry/auto-instrumentations-node noise.
+      // We want to skip low-level framework and node/v8 spans so that actual application business logic surfaces.
+      const isNoise = [
+        'health', 'metrics', 'express.middleware', 'tcp.connect',
+        'middleware -', 'request handler', 'router -', 'corsMiddleware',
+        'fs ', 'net ', 'dns ', 'dns.lookup', 'tcp.connect', 'connect',
+        'readFileSync', 'readFile', 'realpathSync', 'statSync', 'lstatSync', 'access', 'open', 'close', 'read', 'write', 'vfs',
+        'expressInit', 'query', 'jsonParser'
+      ].some(noise => functionName.includes(noise) || functionName === noise);
+
+      // Block generic internal HTTP calls, but allow HTTP route handlers (e.g. `HTTP GET`, `HTTP POST`)
+      // Auto-instrumentation sometimes captures the main route as an HTTP span if manual tracing is broken.
+      const isGenericHttp = functionName === 'HTTP' || functionName.match(/^HTTP [A-Z]+$/);
+
+      if (isNoise || isGenericHttp) {
+        return;
       }
 
-      // Track caller frequencies
-      const caller = call.callerService;
-      callerCounts.set(caller, (callerCounts.get(caller) || 0) + 1);
-    }
+      // Initialize stats for this function if we haven't seen it yet
+      if (!functionStats.has(functionName)) {
+        functionStats.set(functionName, {
+          service: serviceName,
+          internalCalls: 0,
+          externalCalls: 0,
+          internalLatencies: [],
+          externalLatencies: [],
+          callers: new Map<string, number>(),
+        });
+      }
 
-    // Find dominant external caller
+      const stats = functionStats.get(functionName);
+      const latencyMs = (span.duration || 0) / 1000;
+
+      // Determine caller service
+      let callerService = 'external (client)';
+      if (span.references && span.references.length > 0) {
+        // Find the parent span
+        const parentRef = span.references.find(
+          (ref: any) => ref.refType === 'CHILD_OF',
+        );
+        if (parentRef) {
+          callerService =
+            spanServiceMap.get(parentRef.spanID) || 'unknown';
+        }
+      }
+
+      // Tally the calls
+      if (callerService === serviceName) {
+        stats.internalCalls++;
+        stats.internalLatencies.push(latencyMs);
+      } else {
+        stats.externalCalls++;
+        stats.externalLatencies.push(latencyMs);
+        const callerCount = stats.callers.get(callerService) || 0;
+        stats.callers.set(callerService, callerCount + 1);
+      }
+    });
+  });
+
+  // Convert the map to the expected FunctionAnalysis array
+  const results: FunctionAnalysis[] = [];
+
+  functionStats.forEach((stats, functionName) => {
+    const totalCalls = stats.internalCalls + stats.externalCalls;
+    if (totalCalls === 0) return;
+
     let dominantCaller = 'none';
     let dominantCount = 0;
 
-    for (const [caller, count] of Array.from(callerCounts.entries())) {
-      if (caller !== currentService && count > dominantCount) {
-        dominantCaller = caller;
+    stats.callers.forEach((count: number, caller: string) => {
+      if (count > dominantCount) {
         dominantCount = count;
+        dominantCaller = caller;
       }
-    }
+    });
 
-    const totalCalls = internalCalls + externalCalls;
-    const dominantPercent = totalCalls > 0 ? dominantCount / totalCalls : 0;
+    const dominantPercent =
+      totalCalls > 0 ? dominantCount / totalCalls : 0;
 
-    // Calculate average latencies
-    const avgInternalLatency = internalLatencies.length > 0
-      ? internalLatencies.reduce((a, b) => a + b, 0) / internalLatencies.length
-      : 0;
+    const avgInternalLatency =
+      stats.internalLatencies.length > 0
+        ? stats.internalLatencies.reduce((a: number, b: number) => a + b, 0) /
+        stats.internalLatencies.length
+        : 0;
 
-    const avgExternalLatency = externalLatencies.length > 0
-      ? externalLatencies.reduce((a, b) => a + b, 0) / externalLatencies.length
-      : 0;
+    const avgExternalLatency =
+      stats.externalLatencies.length > 0
+        ? stats.externalLatencies.reduce((a: number, b: number) => a + b, 0) /
+        stats.externalLatencies.length
+        : 0;
 
     results.push({
       functionName,
-      currentService,
-      internalCalls,
-      externalCalls,
+      currentService: stats.service,
+      internalCalls: stats.internalCalls,
+      externalCalls: stats.externalCalls,
       dominantCaller,
       dominantPercent,
       avgInternalLatency,
       avgExternalLatency,
     });
-  }
+  });
 
   return results;
 }

@@ -41,7 +41,6 @@ export const useStyles = makeStyles(theme => ({
   },
   tableContainer: {
     backgroundColor: theme.palette.background.paper,
-    maxHeight: '600px',
     border: '1px solid #e0e0e0',
     borderRadius: '8px',
     '& .MuiTableHead-root': {

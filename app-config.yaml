@@ -79,13 +79,13 @@ proxy:
       target: http://localhost:7007/api/function-analytics
     
     # Jaeger Query API for distributed tracing
-    '/api/proxy/jaeger':
+    '/jaeger':
       target: http://localhost:16686
       # For Kubernetes deployment, use:
       # target: http://jaeger-query.observability.svc.cluster.local:16686
       changeOrigin: true
       pathRewrite:
-        '^/api/proxy/jaeger': ''
+        '^/api/proxy/jaeger': '/'
     
     # Prometheus for metrics
     '/prometheus':
@@ -199,6 +199,14 @@ catalog:
 
     # Backstage example entities
     - type: file
+      target: ../../microservices/spring-petclinic-microservices/catalog-info.yaml
+      rules:
+        - allow: [System, Component, API, Resource]
+    - type: file
+      target: ../../microservices/microservices-level5/catalog-info.yaml
+      rules:
+        - allow: [System, Component, API, Resource]
+    - type: file
       target: ../../microservices/simple-microservice-example/catalog-info.yaml
       rules:
         - allow: [System, Component, API, Resource]
@@ -235,6 +243,10 @@ catalog:
       target: ../../k8s/catalog/product-service-catalog.yaml
     - type: file
       target: ../../k8s/catalog/order-service-catalog.yaml
+      
+    # Lightweight OTel Demo Services
+    - type: file
+      target: ../../microservices/lightweight-otel-demo/catalog-info.yaml
     
 scaffolder:
   auditor:

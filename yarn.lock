@@ -9922,7 +9922,7 @@ __metadata:
   languageName: unknown
   linkType: soft
 
-"@internal/plugin-function-analytics-backend@workspace:plugins/function-analytics-backend":
+"@internal/plugin-function-analytics-backend@workspace:^, @internal/plugin-function-analytics-backend@workspace:plugins/function-analytics-backend":
   version: 0.0.0-use.local
   resolution: "@internal/plugin-function-analytics-backend@workspace:plugins/function-analytics-backend"
   dependencies:
@@ -9944,7 +9944,7 @@ __metadata:
   languageName: unknown
   linkType: soft
 
-"@internal/plugin-function-analytics@workspace:plugins/function-analytics":
+"@internal/plugin-function-analytics@workspace:^, @internal/plugin-function-analytics@workspace:plugins/function-analytics":
   version: 0.0.0-use.local
   resolution: "@internal/plugin-function-analytics@workspace:plugins/function-analytics"
   dependencies:
@@ -30553,6 +30553,7 @@ __metadata:
     "@backstage/test-utils": "workspace:^"
     "@backstage/theme": "workspace:^"
     "@backstage/ui": "workspace:^"
+    "@internal/plugin-function-analytics": "workspace:^"
     "@material-ui/core": "npm:^4.12.2"
     "@material-ui/icons": "npm:^4.9.1"
     "@material-ui/lab": "npm:4.0.0-alpha.61"
@@ -30620,6 +30621,7 @@ __metadata:
     "@backstage/plugin-search-backend-node": "workspace:^"
     "@backstage/plugin-signals-backend": "workspace:^"
     "@backstage/plugin-techdocs-backend": "workspace:^"
+    "@internal/plugin-function-analytics-backend": "workspace:^"
     "@opentelemetry/auto-instrumentations-node": "npm:^0.61.0"
     "@opentelemetry/exporter-prometheus": "npm:^0.54.0"
     "@opentelemetry/sdk-node": "npm:^0.54.0"
