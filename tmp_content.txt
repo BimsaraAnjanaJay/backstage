@@ -1,0 +1,58 @@
+      if (service === 'all' || service === '') {
+        // Fetch list of services from Jaeger
+        logger.info('Fetching list of all services from Jaeger');
+        let services: string[] = [];
+        try {
+          const servicesRes = await fetchWithTimeout(`${jaegerBase}/services`);
+          if (servicesRes.ok) {
+            const servicesData = await servicesRes.json();
+            services = (servicesData.data || []) as string[];
+          }
+        } catch (e) {
+          logger.warn(`Could not fetch service list: ${e}`);
+        }
+
+        // Filter out internal/noisy services
+        const targetServices = services.filter(
+          svc =>
+            !svc.startsWith('jaeger') &&
+            !svc.startsWith('unknown_service:') &&
+            svc !== 'jaeger-query' &&
+            svc !== 'jaeger-all-in-one',
+        );
+
+        logger.info(`Fetching traces for ${targetServices.length} services: ${targetServices.join(', ')}`);
+
+        // Fetch traces for each real service in parallel with timeout
+        const traceResults = await Promise.allSettled(
+          targetServices.map(async svc => {
+            const jaegerUrl = `${jaegerBase}/traces?service=${encodeURIComponent(svc)}&limit=500&lookback=${lookback}`;
+            const r = await fetchWithTimeout(jaegerUrl);
+            logger.info(`[Backend Step 1] Fetching raw traces for ${svc} via: ${jaegerUrl}`);
+            if (!r.ok) return [];
+            const d = await r.json();
+            logger.info(`[Backend Step 1] Jaeger returned ${d.data?.length || 0} span records for ${svc}`);
+            return (d.data || []) as any[];
+          }),
+        );
+
+        // Merge, deduplicate by traceID
+        for (const result of traceResults) {
+          if (result.status === 'fulfilled') {
+            for (const trace of result.value) {
+              if (!allTraces.some(t => t.traceID === trace.traceID)) {
+                allTraces.push(trace);
+              }
+            }
+          }
+        }
+      } else {
+        // Single named service
+        const jaegerUrl = `${jaegerBase}/traces?service=${encodeURIComponent(service)}&limit=500&lookback=${lookback}`;
+        logger.info(`Fetching traces from Jaeger: ${jaegerUrl}`);
+        const response = await fetchWithTimeout(jaegerUrl);
+        if (!response.ok) {
+          throw new Error(`Jaeger API returned ${response.status}: ${response.statusText}`);
+        }
+        const data = await response.json();
+        allTraces = Array.isArray(data) ? data : data.data || [];

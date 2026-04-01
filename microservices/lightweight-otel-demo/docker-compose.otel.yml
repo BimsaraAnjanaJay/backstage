@@ -1,16 +1,13 @@
-version: '3.8'
-
 services:
   jaeger:
     image: jaegertracing/all-in-one:latest
     container_name: jaeger-lightweight
     ports:
-      - "16686:16686"
-      - "4317:4317"
-      - "4318:4318"
+      - 16686:16686
+      - 4317:4317
+      - 4318:4318
     networks:
       - otel-net
-
   gateway:
     build: .
     command: npm run start:gateway
@@ -21,17 +18,17 @@ services:
       - PRODUCT_URL=http://product:8082
       - OTEL_SERVICE_NAME=gateway-service
       - OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
-      - OTEL_NODE_RESOURCE_DETECTORS=env,host,os,process
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
+      - OTEL_TRACES_EXPORTER=otlp
+      - OTEL_METRICS_EXPORTER=none
     ports:
-      - "8080:8080"
+      - 8080:8080
     depends_on:
       - auth
       - product
       - jaeger
     networks:
       - otel-net
-
   auth:
     build: .
     command: npm run start:auth
@@ -40,15 +37,15 @@ services:
       - PORT=8081
       - OTEL_SERVICE_NAME=auth-service
       - OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
-      - OTEL_NODE_RESOURCE_DETECTORS=env,host,os,process
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
+      - OTEL_TRACES_EXPORTER=otlp
+      - OTEL_METRICS_EXPORTER=none
     ports:
-      - "8081:8081"
+      - 8081:8081
     depends_on:
       - jaeger
     networks:
       - otel-net
-
   product:
     build: .
     command: npm run start:product
@@ -57,15 +54,15 @@ services:
       - PORT=8082
       - OTEL_SERVICE_NAME=product-service
       - OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
-      - OTEL_NODE_RESOURCE_DETECTORS=env,host,os,process
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
+      - OTEL_TRACES_EXPORTER=otlp
+      - OTEL_METRICS_EXPORTER=none
     ports:
-      - "8082:8082"
+      - 8082:8082
     depends_on:
       - jaeger
     networks:
       - otel-net
-
 networks:
   otel-net:
     driver: bridge

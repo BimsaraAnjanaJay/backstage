@@ -489,7 +489,7 @@ export async function createRouter(
       );
       const composeFile = 'docker-compose.otel.yml';
 
-      if (true) {
+      {
         logger.info('📝 Generating docker-compose.otel.yml with Jaeger...');
 
         // Detect services in the repository
@@ -518,8 +518,6 @@ export async function createRouter(
           await fs.writeFile(composeFilePath, dockerComposeContent);
           logger.info(`✅ Generated docker-compose.otel.yml with ${services.length} services + Jaeger`);
         }
-      } else {
-        logger.info('✅ docker-compose.otel.yml already exists');
       }
 
       logger.info(`📦 Starting containers from ${composeFile}...`);
@@ -656,7 +654,7 @@ export async function createRouter(
       const serviceUrl = `http://localhost:${servicePort}`;
       // Dynamically find endpoints by scanning the service's source code files, 
       // UNLESS the user explicitly provided testEndpoints via catalog annotations.
-      let endpoints: string[] = Array.isArray(testEndpoints) && testEndpoints.length > 0
+      const endpoints: string[] = Array.isArray(testEndpoints) && testEndpoints.length > 0
         ? testEndpoints
         : ['/', '/health'];
 
@@ -669,6 +667,7 @@ export async function createRouter(
               // Match app.get('/some/path', ...) or router.post(...)
               const routeRegex = /app\.(get|post|put|delete|patch)\(['"`]([\/\w\-\{\}\?\=]+)['"`]/g;
               let match;
+              // eslint-disable-next-line no-cond-assign
               while ((match = routeRegex.exec(content)) !== null) {
                 let endpoint = match[2];
                 // Remove query params and path params for simple pinging
@@ -1002,7 +1001,7 @@ export async function createRouter(
         microservicesDir,
         'docker-compose.otel.yml',
       );
-      if (true) {
+      {
         logger.info('📝 Generating docker-compose.otel.yml...');
         if (usingRootCompose) {
           let composeContent = await fs.readFile(path.join(microservicesDir, 'docker-compose.yml'), 'utf-8');

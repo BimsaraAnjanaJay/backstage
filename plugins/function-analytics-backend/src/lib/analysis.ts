@@ -39,23 +39,34 @@ export function analyzeFunctionCalls(rawTraces: any[]): FunctionAnalysis[] {
       const serviceName = process.serviceName;
       let functionName = span.operationName;
 
-      // Aggressive filter for standard @opentelemetry/auto-instrumentations-node noise.
-      // We want to skip low-level framework and node/v8 spans so that actual application business logic surfaces.
-      const isNoise = [
-        'health', 'metrics', 'express.middleware', 'tcp.connect',
-        'middleware -', 'request handler', 'router -', 'corsMiddleware',
-        'fs ', 'net ', 'dns ', 'dns.lookup', 'tcp.connect', 'connect',
-        'readFileSync', 'readFile', 'realpathSync', 'statSync', 'lstatSync', 'access', 'open', 'close', 'read', 'write', 'vfs',
-        'expressInit', 'query', 'jsonParser'
-      ].some(noise => functionName.includes(noise) || functionName === noise);
+      const lowerName = functionName.toLowerCase();
+      const noisePatterns = [
+        'health', 'metrics', 'express.middleware', 'middleware -', 'router -', 'corsmiddleware',
+        'fs.', 'net.', 'dns.', 'dns.lookup', 'tcp.connect', 'connect',
+        'readfilesync', 'readfile', 'realpathsync', 'statsync', 'lstatsync', 'access', 'expressinit', 'jsonparser',
+        'query', 'tcp', 'dns', 'fs ', 'net ', 'vfs', 'close', 'open', 'read', 'write', 'stat',
+        'request handler', 'anonymous', 'pg.', 'mongodb.', 'mongoose.', 'sequelize.', 'knex.'
+      ];
+      const isNoise = noisePatterns.some(pattern => lowerName === pattern || lowerName.includes(pattern));
 
-      // Block generic internal HTTP calls, but allow HTTP route handlers (e.g. `HTTP GET`, `HTTP POST`)
-      // Auto-instrumentation sometimes captures the main route as an HTTP span if manual tracing is broken.
-      const isGenericHttp = functionName === 'HTTP' || functionName.match(/^HTTP [A-Z]+$/);
+      // Block generic internal HTTP calls, but allow HTTP route handlers (e.g. `GET /`, `POST /api`)
+      const isGenericHttp = lowerName === 'http' || !!functionName.match(/^HTTP [A-Z]+$/);
+      
+      // Preserve spans that look like actual routes (e.g. "GET /...") or manual tracer spans (e.g. "auth-...")
+      // or specific business logic functions mentioned by user (internalValidationStep, extractTokenHash)
+      const isAppSpan = functionName.startsWith('GET ') || functionName.startsWith('POST ') || 
+                        functionName.includes('-') || functionName.includes('Step') || 
+                        functionName.includes('Hash') || functionName.includes('Token');
 
-      if (isNoise || isGenericHttp) {
+      if ((isNoise || isGenericHttp) && !isAppSpan) {
         return;
       }
+      
+      // One more check: if it's just a single lowercase word without special chars, it's likely noise (e.g. "index", "middleware")
+      if (!isAppSpan && !functionName.includes(' ') && functionName === functionName.toLowerCase() && functionName.length < 15) {
+        return;
+      }
+      console.log(`[Analysis] ✅ Accepting span: ${functionName} for service: ${serviceName}`);
 
       // Initialize stats for this function if we haven't seen it yet
       if (!functionStats.has(functionName)) {

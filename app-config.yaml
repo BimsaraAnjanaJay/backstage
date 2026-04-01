@@ -199,6 +199,14 @@ catalog:
 
     # Backstage example entities
     - type: file
+      target: ../../microservices/Microservice/catalog-info.yaml
+      rules:
+        - allow: [System, Component, API, Resource]
+    - type: file
+      target: ../../microservices/sample-spring-microservices-new/catalog-info.yaml
+      rules:
+        - allow: [System, Component, API, Resource]
+    - type: file
       target: ../../microservices/spring-petclinic-microservices/catalog-info.yaml
       rules:
         - allow: [System, Component, API, Resource]
