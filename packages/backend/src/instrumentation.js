@@ -30,6 +30,10 @@ const { PrometheusExporter } = require('@opentelemetry/exporter-prometheus');
 // more information on how to scrape it.
 const prometheus = new PrometheusExporter();
 
+// Set service name so Jaeger shows "backstage-backend" instead of "unknown_service:..."
+process.env.OTEL_SERVICE_NAME =
+  process.env.OTEL_SERVICE_NAME || 'backstage-backend';
+
 const sdk = new NodeSDK({
   // traceExporter: ...,
   metricReader: prometheus,

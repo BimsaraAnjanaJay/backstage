@@ -244,7 +244,7 @@ export const FunctionAnalyticsPage = () => {
           selectedBackend,
           timeRange,
           fetchApi,
-          proxyBaseUrl
+          proxyBaseUrl,
         );
 
         setHybridConfigs(configs);
@@ -273,6 +273,7 @@ export const FunctionAnalyticsPage = () => {
     timeRange,
     configLoading,
     fetchApi,
+    discoveryApi,
   ]);
 
   // Dedicated effect: fetch backend function placement analysis independently
@@ -282,11 +283,16 @@ export const FunctionAnalyticsPage = () => {
       try {
         const backendUrl = await discoveryApi.getBaseUrl('function-analytics');
         const queryParams = new URLSearchParams({
-          lookback: getLookbackForTimeRange(timeRange)
+          lookback: getLookbackForTimeRange(timeRange),
         }).toString();
         // eslint-disable-next-line no-console
-        console.log('🔄 [Analysis] Fetching from:', `${backendUrl}/analyze?${queryParams}`);
-        const res = await fetchApi.fetch(`${backendUrl}/analyze?${queryParams}`);
+        console.log(
+          '🔄 [Analysis] Fetching from:',
+          `${backendUrl}/analyze?${queryParams}`,
+        );
+        const res = await fetchApi.fetch(
+          `${backendUrl}/analyze?${queryParams}`,
+        );
         if (!res.ok) {
           throw new Error(`Backend returned ${res.status}: ${res.statusText}`);
         }
@@ -305,9 +311,7 @@ export const FunctionAnalyticsPage = () => {
     };
 
     fetchAnalysis();
-  }, [configLoading, fetchApi, discoveryApi]);
-
-
+  }, [configLoading, fetchApi, discoveryApi, timeRange]);
 
   // Save manual services to localStorage
   useEffect(() => {
@@ -351,7 +355,7 @@ export const FunctionAnalyticsPage = () => {
         selectedBackend,
         timeRange,
         fetchApi,
-        proxyBaseUrl
+        proxyBaseUrl,
       );
       setHybridConfigs(configs);
       setError(null);
@@ -367,15 +371,22 @@ export const FunctionAnalyticsPage = () => {
     try {
       const backendUrl = await discoveryApi.getBaseUrl('function-analytics');
       const queryParams = new URLSearchParams({
-        lookback: getLookbackForTimeRange(timeRange)
+        lookback: getLookbackForTimeRange(timeRange),
       }).toString();
       // eslint-disable-next-line no-console
-      console.log('🔄 [Refresh] Fetching analysis from:', `${backendUrl}/analyze?${queryParams}`);
+      console.log(
+        '🔄 [Refresh] Fetching analysis from:',
+        `${backendUrl}/analyze?${queryParams}`,
+      );
       const res = await fetchApi.fetch(`${backendUrl}/analyze?${queryParams}`);
       if (res.ok) {
         const data = await res.json();
         // eslint-disable-next-line no-console
-        console.log('📥 [Refresh] Got', Array.isArray(data) ? data.length : 'non-array', 'results');
+        console.log(
+          '📥 [Refresh] Got',
+          Array.isArray(data) ? data.length : 'non-array',
+          'results',
+        );
         if (Array.isArray(data)) {
           setBackendAnalysis(data);
         }
@@ -384,7 +395,14 @@ export const FunctionAnalyticsPage = () => {
       // eslint-disable-next-line no-console
       console.error('❌ [Refresh] Analysis fetch failed:', analysisErr);
     }
-  }, [catalogServices, manualServices, selectedBackend, timeRange, fetchApi, discoveryApi]);
+  }, [
+    catalogServices,
+    manualServices,
+    selectedBackend,
+    timeRange,
+    fetchApi,
+    discoveryApi,
+  ]);
 
   const handleTestJaeger = async () => {
     // eslint-disable-next-line no-console
@@ -396,7 +414,8 @@ export const FunctionAnalyticsPage = () => {
       console.log('✅ Jaeger services:', data);
       // eslint-disable-next-line no-alert
       alert(
-        `Jaeger connection successful! Found ${data.data?.length || 0
+        `Jaeger connection successful! Found ${
+          data.data?.length || 0
         } services.`,
       );
     } catch (err) {
@@ -442,12 +461,12 @@ export const FunctionAnalyticsPage = () => {
     return service.serviceName;
   };
 
-  const getLookbackForTimeRange = (range: string): string => {
+  function getLookbackForTimeRange(range: string): string {
     if (range === '5m') return '5m';
     if (range === '24h') return '24h';
     if (range === '7d') return '168h';
     return '1h';
-  };
+  }
 
   // Aggregate data for display
   const allServices = hybridConfigs;
@@ -506,7 +525,9 @@ export const FunctionAnalyticsPage = () => {
             `🚀 Starting Jaeger and microservices containers...`,
           );
 
-          const deployFaUrl = await discoveryApi.getBaseUrl('function-analytics');
+          const deployFaUrl = await discoveryApi.getBaseUrl(
+            'function-analytics',
+          );
           const deployResponse = await fetchApi.fetch(
             `${deployFaUrl}/service/deploy-and-trace`,
             {
@@ -517,12 +538,19 @@ export const FunctionAnalyticsPage = () => {
                 jaegerServiceName,
                 repoName,
                 testEndpoints: (() => {
-                  if (service.source === 'catalog' && 'entity' in service.config) {
-                    const epStr = service.config.entity.metadata.annotations?.['function-analytics/mock-endpoints'];
-                    if (epStr) return epStr.split(',').map((s: string) => s.trim());
+                  if (
+                    service.source === 'catalog' &&
+                    'entity' in service.config
+                  ) {
+                    const epStr =
+                      service.config.entity.metadata.annotations?.[
+                        'function-analytics/mock-endpoints'
+                      ];
+                    if (epStr)
+                      return epStr.split(',').map((s: string) => s.trim());
                   }
                   return undefined;
-                })()
+                })(),
               }),
             },
           );
@@ -534,7 +562,8 @@ export const FunctionAnalyticsPage = () => {
           }
 
           setDeploymentStatus(
-            `✅ Deployed! Jaeger: ${result.jaegerRunning ? 'Running' : 'Failed'
+            `✅ Deployed! Jaeger: ${
+              result.jaegerRunning ? 'Running' : 'Failed'
             } • Generated ${result.tracesInJaeger} traces`,
           );
 
@@ -554,7 +583,8 @@ export const FunctionAnalyticsPage = () => {
         }
       } catch (err) {
         setDeploymentStatus(
-          `❌ Deployment failed: ${err instanceof Error ? err.message : 'Unknown error'
+          `❌ Deployment failed: ${
+            err instanceof Error ? err.message : 'Unknown error'
           }`,
         );
         setTimeout(() => {
@@ -565,7 +595,7 @@ export const FunctionAnalyticsPage = () => {
     };
 
     autoDeployAndTrace();
-  }, [selectedService, allServices, fetchApi, handleRefresh]);
+  }, [selectedService, allServices, fetchApi, handleRefresh, discoveryApi]);
 
   const filteredFunctions: FunctionCall[] = (() => {
     if (!selectedService || selectedService === 'all') {
@@ -612,7 +642,7 @@ export const FunctionAnalyticsPage = () => {
   const avgLatency =
     allServices.length > 0
       ? allServices.reduce((sum, service) => sum + service.avgLatency, 0) /
-      allServices.length
+        allServices.length
       : 0;
   const criticalFunctions = filteredFunctions.filter(
     func => func.errorRate > 1 || func.latency > 100,
@@ -624,7 +654,7 @@ export const FunctionAnalyticsPage = () => {
     s => s.source === 'manual',
   ).length;
   const misplacedFunctions = backendAnalysis.filter(
-    (analysis: any) => analysis.recommendation === 'relocate'
+    (analysis: any) => analysis.recommendation === 'relocate',
   );
   const selectedGroupServices = useMemo(() => {
     if (!selectedService.startsWith('system:')) {
@@ -647,6 +677,46 @@ export const FunctionAnalyticsPage = () => {
       return service.source === 'manual' && systemName === 'manual-services';
     });
   }, [allServices, selectedService]);
+
+  // Fuzzy match between Jaeger service name (currentService) and catalog service name.
+  // Repos often differ: "auth" vs "lightweight-auth" vs "auth-service".
+  // Strip "-service"/"-api" suffixes and common repo prefixes before comparing.
+  const svcNameMatch = (
+    currentService: string,
+    catalogName: string,
+  ): boolean => {
+    if (currentService === catalogName) return true;
+    const strip = (s: string) =>
+      s
+        .toLowerCase()
+        .replace(/-service$/, '')
+        .replace(/-api$/, '');
+    const a = strip(currentService);
+    const b = strip(catalogName);
+    // Exact after stripping ("auth-service" ↔ "auth", "auth" ↔ "auth")
+    if (a === b) return true;
+    // Prefix/suffix: "lightweight-auth" ends with "-auth" ↔ "auth"
+    if (b.endsWith(`-${a}`) || a.endsWith(`-${b}`)) return true;
+    if (b.startsWith(`${a}-`) || a.startsWith(`${b}-`)) return true;
+    return false;
+  };
+
+  // Filter analysis results to only show services relevant to the current selection:
+  // - system selected  → only services belonging to that system
+  // - single service   → only that service
+  // - 'all'            → everything
+  const filteredAnalysis: any[] = (() => {
+    if (selectedService === 'all') return backendAnalysis;
+    if (selectedService.startsWith('system:')) {
+      const names = selectedGroupServices.map(s => s.serviceName);
+      return backendAnalysis.filter((a: any) =>
+        names.some(n => svcNameMatch(a.currentService, n)),
+      );
+    }
+    return backendAnalysis.filter((a: any) =>
+      svcNameMatch(a.currentService, selectedService),
+    );
+  })();
 
   const handleStartGroupTracing = useCallback(async () => {
     if (
@@ -681,7 +751,9 @@ export const FunctionAnalyticsPage = () => {
           );
           const gitHubUrl = repoService ? getServiceGitHubUrl(repoService) : '';
 
-          const faBackendUrl = await discoveryApi.getBaseUrl('function-analytics');
+          const faBackendUrl = await discoveryApi.getBaseUrl(
+            'function-analytics',
+          );
           const deployAllResp = await fetchApi.fetch(
             `${faBackendUrl}/service/deploy-all-and-trace`,
             {
@@ -725,7 +797,9 @@ export const FunctionAnalyticsPage = () => {
           }
         }
 
-        const startJaegerFaUrl = await discoveryApi.getBaseUrl('function-analytics');
+        const startJaegerFaUrl = await discoveryApi.getBaseUrl(
+          'function-analytics',
+        );
         const startJaegerResp = await fetchApi.fetch(
           `${startJaegerFaUrl}/service/start-jaeger`,
           {
@@ -810,7 +884,9 @@ export const FunctionAnalyticsPage = () => {
           // eslint-disable-next-line no-console
           console.log(`📦 Deploying service: ${service.serviceName}`);
 
-          const deployFaUrl = await discoveryApi.getBaseUrl('function-analytics');
+          const deployFaUrl = await discoveryApi.getBaseUrl(
+            'function-analytics',
+          );
           const deployResponse = await fetchApi.fetch(
             `${deployFaUrl}/service/deploy-and-trace`,
             {
@@ -821,12 +897,19 @@ export const FunctionAnalyticsPage = () => {
                 jaegerServiceName,
                 repoName: getServiceRepoName(service),
                 testEndpoints: (() => {
-                  if (service.source === 'catalog' && 'entity' in service.config) {
-                    const epStr = service.config.entity.metadata.annotations?.['function-analytics/mock-endpoints'];
-                    if (epStr) return epStr.split(',').map((s: string) => s.trim());
+                  if (
+                    service.source === 'catalog' &&
+                    'entity' in service.config
+                  ) {
+                    const epStr =
+                      service.config.entity.metadata.annotations?.[
+                        'function-analytics/mock-endpoints'
+                      ];
+                    if (epStr)
+                      return epStr.split(',').map((s: string) => s.trim());
                   }
                   return undefined;
-                })()
+                })(),
               }),
             },
           );
@@ -842,8 +925,9 @@ export const FunctionAnalyticsPage = () => {
           deployStatus = 'started';
           // eslint-disable-next-line no-console
           console.log(`✅ Service deployed: ${service.serviceName}`);
-          message = `Tracing started; generated ${deployResult.tracesInJaeger || 0
-            } traces`;
+          message = `Tracing started; generated ${
+            deployResult.tracesInJaeger || 0
+          } traces`;
         } catch (deployErr) {
           deployStatus = 'failed';
           message =
@@ -941,6 +1025,7 @@ export const FunctionAnalyticsPage = () => {
     selectedGroupServices,
     selectedService,
     timeRange,
+    discoveryApi,
   ]);
 
   if (configLoading) {
@@ -1188,8 +1273,9 @@ export const FunctionAnalyticsPage = () => {
                                   />
                                 )}
                               <Chip
-                                label={`${service.functions?.length || 0
-                                  } functions`}
+                                label={`${
+                                  service.functions?.length || 0
+                                } functions`}
                                 size="small"
                                 style={{ height: 20, fontSize: '0.7rem' }}
                                 variant="outlined"
@@ -1544,8 +1630,16 @@ export const FunctionAnalyticsPage = () => {
                 <TableBody>
                   {[...allServices]
                     .sort((a, b) => {
-                      if (a.connectionStatus === 'connected' && b.connectionStatus !== 'connected') return -1;
-                      if (a.connectionStatus !== 'connected' && b.connectionStatus === 'connected') return 1;
+                      if (
+                        a.connectionStatus === 'connected' &&
+                        b.connectionStatus !== 'connected'
+                      )
+                        return -1;
+                      if (
+                        a.connectionStatus !== 'connected' &&
+                        b.connectionStatus === 'connected'
+                      )
+                        return 1;
                       return 0;
                     })
                     .map((service, index) => (
@@ -1577,7 +1671,9 @@ export const FunctionAnalyticsPage = () => {
                           />
                         </TableCell>
                         <TableCell>{service.owner || 'Unknown'}</TableCell>
-                        <TableCell>{service.environment || 'Unknown'}</TableCell>
+                        <TableCell>
+                          {service.environment || 'Unknown'}
+                        </TableCell>
                         <TableCell>
                           <Chip
                             icon={
@@ -1628,20 +1724,35 @@ export const FunctionAnalyticsPage = () => {
                   </TableRow>
                 </TableHead>
                 <TableBody>
-                  {backendAnalysis.length > 0 ? (
-                    backendAnalysis.map((analysis: any, index: number) => {
+                  {filteredAnalysis.length > 0 ? (
+                    filteredAnalysis.map((analysis: any, index: number) => {
                       const service = allServices.find(
                         s => s.serviceName === analysis.currentService,
                       );
 
-                      const totalCalls = analysis.internalCalls + analysis.externalCalls;
-                      const internalPerc = totalCalls > 0 ? (analysis.internalCalls / totalCalls) * 100 : 0;
-                      const externalPerc = totalCalls > 0 ? (analysis.externalCalls / totalCalls) * 100 : 0;
+                      const totalCallsForAnalysis =
+                        analysis.internalCalls + analysis.externalCalls;
+                      const internalPerc =
+                        totalCallsForAnalysis > 0
+                          ? (analysis.internalCalls / totalCallsForAnalysis) *
+                            100
+                          : 0;
+                      const externalPerc =
+                        totalCallsForAnalysis > 0
+                          ? (analysis.externalCalls / totalCallsForAnalysis) *
+                            100
+                          : 0;
 
                       let riskLevel = 'LOW';
                       if (analysis.recommendation === 'relocate') {
                         riskLevel = externalPerc > 85 ? 'HIGH' : 'MEDIUM';
                       }
+
+                      let recLabel = 'Keep';
+                      if (analysis.recommendation === 'relocate')
+                        recLabel = 'Relocate';
+                      else if (analysis.recommendation === 'review')
+                        recLabel = 'Review Architecture';
 
                       return (
                         <TableRow
@@ -1669,10 +1780,12 @@ export const FunctionAnalyticsPage = () => {
                             />
                           </TableCell>
                           <TableCell>
-                            {internalPerc.toFixed(1)}% ({analysis.internalCalls})
+                            {internalPerc.toFixed(1)}% ({analysis.internalCalls}
+                            )
                           </TableCell>
                           <TableCell>
-                            {externalPerc.toFixed(1)}% ({analysis.externalCalls})
+                            {externalPerc.toFixed(1)}% ({analysis.externalCalls}
+                            )
                           </TableCell>
                           <TableCell>
                             <Chip
@@ -1681,19 +1794,14 @@ export const FunctionAnalyticsPage = () => {
                               size="small"
                             />
                           </TableCell>
-                          <TableCell>
-                            {analysis.recommendation === 'relocate'
-                              ? 'Relocate'
-                              : analysis.recommendation === 'review'
-                                ? 'Review Architecture'
-                                : 'Keep'
-                            }
-                          </TableCell>
+                          <TableCell>{recLabel}</TableCell>
                           <TableCell>
                             {analysis.suggestedService || 'N/A'}
                           </TableCell>
                           <TableCell>
-                            {analysis.predictedLatencyImprovement ? analysis.predictedLatencyImprovement.toFixed(2) : '0.00'}
+                            {analysis.predictedLatencyImprovement
+                              ? analysis.predictedLatencyImprovement.toFixed(2)
+                              : '0.00'}
                           </TableCell>
                         </TableRow>
                       );
@@ -1705,12 +1813,17 @@ export const FunctionAnalyticsPage = () => {
                         style={{ textAlign: 'center', padding: '40px' }}
                       >
                         <Typography color="textSecondary">
-                          {loading
-                            ? '⏳ Loading analysis data...'
-                            : '⚠️ No function placement data yet. Make sure Jaeger is running with traces from auth-service, gateway-service, or product-service, then click Refresh.'}
-                        </Typography>
-                        <Typography variant="caption" color="textSecondary" style={{ display: 'block', marginTop: 8 }}>
-                          Debug: backendAnalysis.length = {backendAnalysis.length}
+                          {(() => {
+                            const subject = selectedService.startsWith(
+                              'system:',
+                            )
+                              ? 'system'
+                              : 'service';
+                            if (loading) return '⏳ Loading analysis data...';
+                            if (backendAnalysis.length > 0)
+                              return `⚠️ No analysis data for the selected ${subject}. Try selecting a different service or running traces first.`;
+                            return '⚠️ No function placement data yet. Run group tracing first, then click Refresh.';
+                          })()}
                         </Typography>
                       </TableCell>
                     </TableRow>
@@ -1741,16 +1854,22 @@ export const FunctionAnalyticsPage = () => {
           }}
           onRegisterRepo={async (url: string) => {
             try {
-              const res = await fetchApi.fetch('/api/function-analytics/microservice/detect', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ repoUrl: url }),
-              });
+              const res = await fetchApi.fetch(
+                '/api/function-analytics/microservice/detect',
+                {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ repoUrl: url }),
+                },
+              );
               if (!res.ok) {
-                throw new Error(`Failed to register repository: ${res.statusText}`);
+                throw new Error(
+                  `Failed to register repository: ${res.statusText}`,
+                );
               }
               window.location.reload();
             } catch (err) {
+              // eslint-disable-next-line no-console
               console.error('Registration failed:', err);
               setError('Failed to register repository');
               setShowConfigDialog(false);
@@ -1765,6 +1884,6 @@ export const FunctionAnalyticsPage = () => {
           selectedBackend={selectedBackend}
         />
       </Content>
-    </Page >
+    </Page>
   );
 };

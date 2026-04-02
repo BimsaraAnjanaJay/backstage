@@ -19,6 +19,7 @@ import {
   createBackendPlugin,
 } from '@backstage/backend-plugin-api';
 import { createRouter } from './service/router';
+import { FraConfig, FraConfigSchema } from './modules/config/FraConfig';
 
 /**
  * The function analytics backend plugin.
@@ -33,16 +34,110 @@ export const functionAnalyticsPlugin = createBackendPlugin({
         httpAuth: coreServices.httpAuth,
         logger: coreServices.logger,
         httpRouter: coreServices.httpRouter,
+        rootConfig: coreServices.rootConfig,
       },
-      async init({ httpAuth, logger, httpRouter }) {
+      async init({ httpAuth, logger, httpRouter, rootConfig }) {
+        // Build FraConfig from app-config.yaml `fra:` block if present,
+        // falling back to hardcoded defaults for every omitted key.
+        const fraConfigOverrides: Partial<FraConfigSchema> = {};
+        try {
+          const fraBlock = rootConfig.getOptionalConfig('fra');
+          if (fraBlock) {
+            const workspaceRoot = fraBlock.getOptionalString('workspaceRoot');
+            if (workspaceRoot) fraConfigOverrides.workspaceRoot = workspaceRoot;
+
+            const tracingBlock = fraBlock.getOptionalConfig('tracing');
+            if (tracingBlock) {
+              const defaultLookbackHours = tracingBlock.getOptionalNumber(
+                'defaultLookbackHours',
+              );
+              const maxTracesPerService = tracingBlock.getOptionalNumber(
+                'maxTracesPerService',
+              );
+              fraConfigOverrides.tracing = {
+                ...FraConfig.defaults().tracing,
+                ...(defaultLookbackHours !== undefined && {
+                  defaultLookbackHours,
+                }),
+                ...(maxTracesPerService !== undefined && {
+                  maxTracesPerService,
+                }),
+              };
+            }
+
+            const discoveryBlock = fraBlock.getOptionalConfig('discovery');
+            if (discoveryBlock) {
+              const minConfidenceThreshold = discoveryBlock.getOptionalNumber(
+                'minConfidenceThreshold',
+              );
+              const maxScanDepth =
+                discoveryBlock.getOptionalNumber('maxScanDepth');
+              fraConfigOverrides.discovery = {
+                ...FraConfig.defaults().discovery,
+                ...(minConfidenceThreshold !== undefined && {
+                  minConfidenceThreshold,
+                }),
+                ...(maxScanDepth !== undefined && { maxScanDepth }),
+              };
+            }
+
+            const catalogBlock = fraBlock.getOptionalConfig('catalog');
+            if (catalogBlock) {
+              const defaultOwner =
+                catalogBlock.getOptionalString('defaultOwner');
+              const defaultLifecycle =
+                catalogBlock.getOptionalString('defaultLifecycle');
+              const dryRun = catalogBlock.getOptionalBoolean('dryRun');
+              fraConfigOverrides.catalog = {
+                ...FraConfig.defaults().catalog,
+                ...(defaultOwner !== undefined && { defaultOwner }),
+                ...(defaultLifecycle !== undefined && { defaultLifecycle }),
+                ...(dryRun !== undefined && { dryRun }),
+              };
+            }
+
+            const analysisBlock = fraBlock.getOptionalConfig('analysis');
+            if (analysisBlock) {
+              const externalCallThreshold = analysisBlock.getOptionalNumber(
+                'externalCallThreshold',
+              );
+              const confidenceMargin =
+                analysisBlock.getOptionalNumber('confidenceMargin');
+              const minSampleSizeForHighConfidence =
+                analysisBlock.getOptionalNumber(
+                  'minSampleSizeForHighConfidence',
+                );
+              fraConfigOverrides.analysis = {
+                ...FraConfig.defaults().analysis,
+                ...(externalCallThreshold !== undefined && {
+                  externalCallThreshold,
+                }),
+                ...(confidenceMargin !== undefined && { confidenceMargin }),
+                ...(minSampleSizeForHighConfidence !== undefined && {
+                  minSampleSizeForHighConfidence,
+                }),
+              };
+            }
+          }
+        } catch (e) {
+          logger.warn(`Could not read fra: config block, using defaults: ${e}`);
+        }
+
+        const fraConfig = new FraConfig(fraConfigOverrides);
+
         httpRouter.use(
           await createRouter({
             httpAuth,
             logger,
+            config: fraConfig,
           }),
         );
         httpRouter.addAuthPolicy({
           path: '/health',
+          allow: 'unauthenticated',
+        });
+        httpRouter.addAuthPolicy({
+          path: '/fra/config',
           allow: 'unauthenticated',
         });
       },

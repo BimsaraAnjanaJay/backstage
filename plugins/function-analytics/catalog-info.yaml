@@ -1,0 +1,9 @@
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: internal-plugin-function-analytics
+  title: '@internal/plugin-function-analytics'
+spec:
+  lifecycle: experimental
+  type: backstage-frontend-plugin
+  owner: maintainers

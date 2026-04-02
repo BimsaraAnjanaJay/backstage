@@ -53,10 +53,12 @@ export const fetchJaegerServiceMetrics = async (
   );
 
   try {
-    const baseUrl =
-      backend.endpoint && backend.endpoint !== 'http://localhost:16686'
-        ? backend.endpoint.replace(/\/$/, '')
-        : (proxyBaseUrl ? `${proxyBaseUrl}/jaeger` : '/api/proxy/jaeger');
+    let baseUrl: string;
+    if (backend.endpoint && backend.endpoint !== 'http://localhost:16686') {
+      baseUrl = backend.endpoint.replace(/\/$/, '');
+    } else {
+      baseUrl = proxyBaseUrl ? `${proxyBaseUrl}/jaeger` : '/api/proxy/jaeger';
+    }
 
     let lookback = timeRange.toLowerCase();
     if (lookback === '7d') lookback = '168h'; // Jaeger supports hours better
@@ -326,7 +328,7 @@ export const fetchJaegerServiceMetrics = async (
     const avgLatency =
       functions.length > 0
         ? functions.reduce((sum, f) => sum + f.latency * f.callCount, 0) /
-        totalCalls
+          totalCalls
         : 0;
     const totalErrors = functions.reduce(
       (sum, f) => sum + (f.errorRate * f.callCount) / 100,
