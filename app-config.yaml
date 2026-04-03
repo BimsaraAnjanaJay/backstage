@@ -253,12 +253,6 @@ catalog:
       target: ../../k8s/catalog/order-service-catalog.yaml
       
 
-    # Library Demo — function placement analysis verification
-    - type: file
-      target: ../../microservices/library-demo/catalog-info.yaml
-      rules:
-        - allow: [System, Component]
-
 scaffolder:
   auditor:
     taskParameterMaxLength: 256
