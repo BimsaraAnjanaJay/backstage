@@ -1,0 +1,36 @@
+services:
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: jaeger
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    ports:
+      - 16686:16686
+      - 4318:4318
+      - 4317:4317
+      - 14268:14268
+      - 9411:9411
+    networks:
+      - microservices
+  lightweight-otel-demo:
+    build:
+      context: ./lightweight-otel-demo
+      dockerfile: Dockerfile
+    image: lightweight-otel-demo:latest
+    container_name: lightweight-otel-demo
+    environment:
+      - OTEL_TRACES_EXPORTER=otlp
+      - OTEL_SERVICE_NAME=lightweight-otel-demo
+      - OTEL_RESOURCE_ATTRIBUTES=service.namespace=production
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
+      - OTEL_NODE_RESOURCE_DETECTORS=env,host,os,process
+    ports:
+      - 8080:8080
+    depends_on:
+      - jaeger
+    networks:
+      - microservices
+    command: sh -c "npm install && npm install --no-save @opentelemetry/api @opentelemetry/auto-instrumentations-node @opentelemetry/sdk-node && node --require @opentelemetry/auto-instrumentations-node/register index.js"
+networks:
+  microservices:
+    driver: bridge

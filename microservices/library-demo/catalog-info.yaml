@@ -1,0 +1,52 @@
+apiVersion: backstage.io/v1alpha1
+kind: System
+metadata:
+  name: library-demo
+  description: Library Management System — demo for function placement analysis
+spec:
+  owner: guests
+---
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: book-service
+  description: Book catalog service. Contains misplaced calculate-late-fee function.
+  annotations:
+    backstage.io/managed-by-location: "file:./catalog-info.yaml"
+    function-analytics/repo-name: "library-demo"
+    function-analytics/port: "5001"
+spec:
+  type: service
+  lifecycle: production
+  owner: guests
+  system: library-demo
+---
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: loan-service
+  description: Loan management service. Core orchestrator for library transactions.
+  annotations:
+    backstage.io/managed-by-location: "file:./catalog-info.yaml"
+    function-analytics/repo-name: "library-demo"
+    function-analytics/port: "5002"
+spec:
+  type: service
+  lifecycle: production
+  owner: guests
+  system: library-demo
+---
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: member-service
+  description: Member profile service. Contains misplaced validate function.
+  annotations:
+    backstage.io/managed-by-location: "file:./catalog-info.yaml"
+    function-analytics/repo-name: "library-demo"
+    function-analytics/port: "5003"
+spec:
+  type: service
+  lifecycle: production
+  owner: guests
+  system: library-demo

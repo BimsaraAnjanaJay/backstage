@@ -6,6 +6,7 @@ WORKDIR /app
 # Copy package info and install dependencies
 COPY package*.json ./
 RUN npm install
+RUN npm install --no-save @opentelemetry/api @opentelemetry/auto-instrumentations-node @opentelemetry/sdk-node
 
 # Copy application source code
 COPY . .

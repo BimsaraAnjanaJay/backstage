@@ -643,10 +643,10 @@ export async function createRouter(
       );
 
       const serviceUrl = `http://localhost:${servicePort}`;
-      const endpoints: string[] =
+      const endpoints: { path: string, method: string }[] =
         Array.isArray(testEndpoints) && testEndpoints.length > 0
-          ? testEndpoints
-          : ['/', '/health'];
+          ? testEndpoints.map(e => ({ path: e, method: 'GET' }))
+          : [{ path: '/', method: 'GET' }, { path: '/health', method: 'GET' }];
 
       if (!testEndpoints || testEndpoints.length === 0) {
         try {
@@ -660,13 +660,17 @@ export async function createRouter(
                 'utf8',
               );
               const routeRegex =
-                /app\.(get|post|put|delete|patch)\(['"`]([\/\w\-\{\}\?\=]+)['"`]/g;
+                /app\.(get|post|put|delete|patch)\(['"`]([\/\w\-\{\}\?\=\:]+)['"`]/g;
               let match;
               // eslint-disable-next-line no-cond-assign
               while ((match = routeRegex.exec(fileContent)) !== null) {
-                let endpoint = match[2];
-                endpoint = endpoint.split('?')[0].replace(/:\w+/g, '123');
-                if (!endpoints.includes(endpoint)) endpoints.push(endpoint);
+                const method = match[1].toUpperCase();
+                let endpointPath = match[2];
+                // basic replacement to ensure the endpoint does not throw 404
+                endpointPath = endpointPath.split('?')[0].replace(/:\w+/g, '1');
+                if (!endpoints.find(e => e.path === endpointPath && e.method === method)) {
+                  endpoints.push({ path: endpointPath, method });
+                }
               }
             }
           }
@@ -678,9 +682,7 @@ export async function createRouter(
       }
 
       logger.info(
-        `Discovered endpoints to trace for ${actualServiceName}: ${endpoints.join(
-          ', ',
-        )}`,
+        `Discovered endpoints to trace for ${actualServiceName}: ${endpoints.map(e => `${e.method} ${e.path}`).join(', ')}`,
       );
 
       // Wait for the service to be reachable (npm install + OTEL setup can take 60-180s)
@@ -721,22 +723,25 @@ export async function createRouter(
       }
 
       let successCount = 0;
-      for (let i = 0; i < 20; i++) {
-        const endpoint = endpoints[i % endpoints.length];
+      const targetTraceRequests = 250;
+      for (let i = 0; i < targetTraceRequests; i++) {
+        const endpointObj = endpoints[i % endpoints.length];
         try {
-          const response = await fetch(`${serviceUrl}${endpoint}`, {
-            method: 'GET',
-            headers: { Accept: 'application/json' },
+          const isWrite = ['POST', 'PUT', 'PATCH'].includes(endpointObj.method);
+          const response = await fetch(`${serviceUrl}${endpointObj.path}`, {
+            method: endpointObj.method,
+            headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+            body: isWrite ? JSON.stringify({ memberId: 'm1', bookId: '1' }) : undefined,
           });
           successCount++;
-          logger.info(`Request ${i + 1}/20: ${response.status} ${endpoint}`);
+          logger.info(`Request ${i + 1}/${targetTraceRequests}: ${response.status} ${endpointObj.method} ${endpointObj.path}`);
         } catch (err) {
-          logger.warn(`Request ${i + 1}/20 failed: ${err}`);
+          logger.warn(`Request ${i + 1}/${targetTraceRequests} failed: ${err}`);
         }
-        await new Promise(resolve => setTimeout(resolve, 500));
+        await new Promise(resolve => setTimeout(resolve, 50));
       }
 
-      logger.info(`✅ Generated ${successCount}/20 requests to ${serviceName}`);
+      logger.info(`✅ Generated ${successCount}/${targetTraceRequests} requests to ${serviceName}`);
       logger.info('⏳ Waiting for traces to propagate to Jaeger...');
       await new Promise(resolve => setTimeout(resolve, 8000));
 
@@ -976,25 +981,17 @@ export async function createRouter(
       logger.info(`🚀 Deploying all services from repo: ${repoName}`);
 
       const services = await detectServices(microservicesDir, config);
-      let usingRootCompose = false;
+      const rootComposePath = path.join(microservicesDir, 'docker-compose.yml');
+      const hasRootCompose = await fs.pathExists(rootComposePath);
 
-      if (services.length === 0) {
-        const rootComposePath = path.join(
-          microservicesDir,
-          'docker-compose.yml',
-        );
-        if (await fs.pathExists(rootComposePath)) {
-          logger.info('📝 Root docker-compose.yml found for full deployment!');
-          usingRootCompose = true;
-        } else {
-          return res
-            .status(400)
-            .json({
-              success: false,
-              error: 'No services detected in repository',
-            });
-        }
-      } else {
+      if (!hasRootCompose && services.length === 0) {
+        return res.status(400).json({
+          success: false,
+          error: 'No services detected and no docker-compose.yml found in repository',
+        });
+      }
+
+      if (services.length > 0) {
         logger.info(
           `✅ Detected ${services.length} services: ${services
             .map(s => s.name)
@@ -1010,18 +1007,13 @@ export async function createRouter(
         'docker-compose.otel.yml',
       );
       logger.info('📝 Generating docker-compose.otel.yml...');
-      if (usingRootCompose) {
-        const rootContent = await fs.readFile(
-          path.join(microservicesDir, 'docker-compose.yml'),
-          'utf-8',
-        );
-        await fs.writeFile(
-          composeFilePath,
-          rootContent.replace(
-            /OTEL_EXPORTER_OTLP_ENDPOINT/g,
-            'OTEL_NODE_RESOURCE_DETECTORS=env,host,os,process\n      - OTEL_EXPORTER_OTLP_ENDPOINT',
-          ),
-        );
+      if (hasRootCompose) {
+        // Prefer root docker-compose.yml — it has correct ports, env vars, and inter-service URLs.
+        // injectOtelIntoComposeContent adds Jaeger (if absent) and OTEL env vars without overriding
+        // anything the repo already configured correctly.
+        logger.info('📝 Using root docker-compose.yml with OTEL injection...');
+        const rootContent = await fs.readFile(rootComposePath, 'utf-8');
+        await fs.writeFile(composeFilePath, injectOtelIntoComposeContent(rootContent));
       } else {
         await fs.writeFile(composeFilePath, generateDockerCompose(services));
       }
@@ -1034,10 +1026,11 @@ export async function createRouter(
           'docker-compose.otel.yml',
           'up',
           '-d',
+          '--build',
           '--remove-orphans',
           '--no-log-prefix',
         ],
-        { cwd: microservicesDir, shell: true, timeout: 180000 },
+        { cwd: microservicesDir, shell: true, timeout: 300000 },
       );
 
       let deployErr = '';
@@ -1188,7 +1181,7 @@ export async function createRouter(
       logger.info(`Found ${runningServices.length} running services`);
 
       logger.info(`Generating traces for ${serviceName}...`);
-      const traceCount = 20;
+      const traceCount = 250;
       const traces = [];
 
       const serviceInfo = runningServices.find(
@@ -1214,7 +1207,7 @@ export async function createRouter(
               status: response.status,
               quote: (data as any).quote?.substring(0, 50),
             });
-            await new Promise(resolve => setTimeout(resolve, 500));
+            await new Promise(resolve => setTimeout(resolve, 50));
           } catch (err) {
             logger.warn(`Request ${i + 1} failed: ${err}`);
           }

@@ -61,7 +61,7 @@ export function applyDecisionLogic(
     let recommendation: 'relocate' | 'keep' | 'review' = 'keep';
 
     if (isMisplaced) {
-      if (dominantCaller === currentService || dominantCaller === 'external') {
+      if (dominantCaller === currentService || dominantCaller.startsWith('external')) {
         recommendation = 'review';
         suggestedService = null;
       } else {

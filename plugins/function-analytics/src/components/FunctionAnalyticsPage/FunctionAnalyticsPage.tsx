@@ -430,8 +430,12 @@ export const FunctionAnalyticsPage = () => {
 
   const getServiceRepoName = (service: HybridServiceConfig): string => {
     if (service.source === 'catalog' && 'entity' in service.config) {
-      const repoSlug =
-        service.config.entity.metadata.annotations?.['github.com/project-slug'];
+      const annotations = service.config.entity.metadata.annotations || {};
+      // Explicit annotation wins — used by local repos without a GitHub slug
+      const explicit = annotations['function-analytics/repo-name'];
+      if (explicit) return explicit;
+      // Fall back to deriving from GitHub project slug
+      const repoSlug = annotations['github.com/project-slug'];
       if (repoSlug) {
         return repoSlug.split('/').pop()?.replace('.git', '') || '';
       }
@@ -468,8 +472,14 @@ export const FunctionAnalyticsPage = () => {
     return '1h';
   }
 
-  // Aggregate data for display
-  const allServices = hybridConfigs;
+  // Aggregate data for display, explicitly filtering out default backstage catalog noise
+  const allServices = hybridConfigs.filter(service => {
+    if (service.source === 'catalog' && 'entity' in service.config) {
+      const sys = (service.config.entity.spec?.system as string) || 'backstage-core';
+      return !['backstage-core', 'podcast', 'artist-engagement-portal', 'audio-playback'].includes(sys);
+    }
+    return true;
+  });
 
   // Auto-deploy and trace service when selected
   useEffect(() => {
@@ -1160,13 +1170,16 @@ export const FunctionAnalyticsPage = () => {
                   // Sort: microservice systems first, then manual, then backstage-core
                   const sortedSystems = Array.from(
                     servicesBySystem.entries(),
-                  ).sort(([a], [b]) => {
-                    if (a === 'backstage-core') return 1;
-                    if (b === 'backstage-core') return -1;
-                    if (a === 'manual-services') return 1;
-                    if (b === 'manual-services') return -1;
-                    return a.localeCompare(b);
-                  });
+                  )
+                    .filter(
+                      ([sys]) =>
+                        !['backstage-core', 'podcast', 'artist-engagement-portal'].includes(sys)
+                    )
+                    .sort(([a], [b]) => {
+                      if (a === 'manual-services') return 1;
+                      if (b === 'manual-services') return -1;
+                      return a.localeCompare(b);
+                    });
 
                   return sortedSystems.flatMap(([systemName, services]) => {
                     let systemTitle: string;

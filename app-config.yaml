@@ -252,10 +252,13 @@ catalog:
     - type: file
       target: ../../k8s/catalog/order-service-catalog.yaml
       
-    # Lightweight OTel Demo Services
+
+    # Library Demo — function placement analysis verification
     - type: file
-      target: ../../microservices/lightweight-otel-demo/catalog-info.yaml
-    
+      target: ../../microservices/library-demo/catalog-info.yaml
+      rules:
+        - allow: [System, Component]
+
 scaffolder:
   auditor:
     taskParameterMaxLength: 256

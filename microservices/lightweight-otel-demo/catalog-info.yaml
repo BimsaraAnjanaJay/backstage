@@ -1,65 +1,63 @@
 apiVersion: backstage.io/v1alpha1
-kind: Component
+kind: System
 metadata:
-  name: lightweight-gateway
-  description: Lightweight Gateway Service for OTel Evaluation
-  tags:
-    - nodejs
-    - otel
+  name: lightweight-otel-demo
+  title: Lightweight Otel Demo
+  description: Microservices system from
+    https://github.com/BimsaraAnjanaJay/lightweight-otel-demo
   annotations:
-    backstage.io/techdocs-ref: dir:.
     github.com/project-slug: BimsaraAnjanaJay/lightweight-otel-demo
-    jaegertracing.io/service-name: gateway-service
-    function-analytics/mock-endpoints: "/api/checkout"
 spec:
-  type: service
-  lifecycle: experimental
-  owner: user:guest
-  system: lightweight-otel-system
----
-apiVersion: backstage.io/v1alpha1
-kind: Component
-metadata:
-  name: lightweight-auth
-  description: Lightweight Auth Service for OTel Evaluation
-  tags:
-    - nodejs
-    - otel
-  annotations:
-    backstage.io/techdocs-ref: dir:.
-    github.com/project-slug: BimsaraAnjanaJay/lightweight-otel-demo
-    jaegertracing.io/service-name: auth-service
-    function-analytics/mock-endpoints: "/validate?token=demo"
-spec:
-  type: service
-  lifecycle: experimental
-  owner: user:guest
-  system: lightweight-otel-system
----
-apiVersion: backstage.io/v1alpha1
-kind: Component
-metadata:
-  name: lightweight-product
-  description: Lightweight Product Service for OTel Evaluation
-  tags:
-    - nodejs
-    - otel
-  annotations:
-    backstage.io/techdocs-ref: dir:.
-    github.com/project-slug: BimsaraAnjanaJay/lightweight-otel-demo
-    jaegertracing.io/service-name: product-service
-    function-analytics/mock-endpoints: "/products"
-spec:
-  type: service
-  lifecycle: experimental
-  owner: user:guest
-  system: lightweight-otel-system
+  owner: team-platform
+  domain: microservices
 
 ---
 apiVersion: backstage.io/v1alpha1
-kind: System
+kind: Component
 metadata:
-  name: lightweight-otel-system
-  description: A minimalist microservice ecosystem designed specifically for Function Relocation Analyzer evaluation.
+  name: auth
+  title: Auth
+  description: nodejs microservice
+  annotations:
+    jaegertracing.io/service-name: auth
+    tracing.opentelemetry/instrumented: "true"
+    github.com/project-slug: BimsaraAnjanaJay/lightweight-otel-demo
 spec:
-  owner: user:guest
+  type: service
+  lifecycle: production
+  owner: team-platform
+  system: lightweight-otel-demo
+
+---
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: gateway
+  title: Gateway
+  description: nodejs microservice
+  annotations:
+    jaegertracing.io/service-name: gateway
+    tracing.opentelemetry/instrumented: "true"
+    github.com/project-slug: BimsaraAnjanaJay/lightweight-otel-demo
+spec:
+  type: service
+  lifecycle: production
+  owner: team-platform
+  system: lightweight-otel-demo
+
+---
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: product
+  title: Product
+  description: nodejs microservice
+  annotations:
+    jaegertracing.io/service-name: product
+    tracing.opentelemetry/instrumented: "true"
+    github.com/project-slug: BimsaraAnjanaJay/lightweight-otel-demo
+spec:
+  type: service
+  lifecycle: production
+  owner: team-platform
+  system: lightweight-otel-demo

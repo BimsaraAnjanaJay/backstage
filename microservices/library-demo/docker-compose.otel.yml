@@ -1,0 +1,89 @@
+version: "3.8"
+services:
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: jaeger-library
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    ports:
+      - 16686:16686
+      - 4317:4317
+      - 4318:4318
+  book-service:
+    build:
+      context: ./book-service
+      dockerfile: Dockerfile
+    container_name: book-service
+    environment:
+      - PORT=5001
+      - OTEL_TRACES_EXPORTER=otlp
+      - OTEL_SERVICE_NAME=book-service
+      - OTEL_RESOURCE_ATTRIBUTES=service.namespace=production
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
+      - OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+      - OTEL_NODE_RESOURCE_DETECTORS=env,host,os,process
+    ports:
+      - 5001:5001
+    depends_on:
+      - jaeger
+    command: node otel-server.js
+  member-service:
+    build:
+      context: ./member-service
+      dockerfile: Dockerfile
+    container_name: member-service
+    environment:
+      - PORT=5003
+      - OTEL_TRACES_EXPORTER=otlp
+      - OTEL_SERVICE_NAME=member-service
+      - OTEL_RESOURCE_ATTRIBUTES=service.namespace=production
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
+      - OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+      - OTEL_NODE_RESOURCE_DETECTORS=env,host,os,process
+    ports:
+      - 5003:5003
+    depends_on:
+      - jaeger
+    command: node otel-server.js
+  loan-service:
+    build:
+      context: ./loan-service
+      dockerfile: Dockerfile
+    container_name: loan-service
+    environment:
+      - PORT=5002
+      - BOOK_SERVICE_URL=http://book-service:5001
+      - MEMBER_SERVICE_URL=http://member-service:5003
+      - OTEL_TRACES_EXPORTER=otlp
+      - OTEL_SERVICE_NAME=loan-service
+      - OTEL_RESOURCE_ATTRIBUTES=service.namespace=production
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
+      - OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+      - OTEL_NODE_RESOURCE_DETECTORS=env,host,os,process
+    ports:
+      - 5002:5002
+    depends_on:
+      - jaeger
+      - book-service
+      - member-service
+    command: node otel-server.js
+  traffic-generator:
+    image: node:20-alpine
+    container_name: library-traffic-generator
+    working_dir: /app
+    volumes:
+      - ./traffic-generator.js:/app/traffic-generator.js:ro
+    environment:
+      - LOAN_SERVICE_URL=http://loan-service:5002
+      - INTERVAL_MS=3000
+      - OTEL_TRACES_EXPORTER=otlp
+      - OTEL_SERVICE_NAME=traffic-generator
+      - OTEL_RESOURCE_ATTRIBUTES=service.namespace=production
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
+      - OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+      - OTEL_NODE_RESOURCE_DETECTORS=env,host,os,process
+      - PORT=3000
+    command: node traffic-generator.js
+    depends_on:
+      - loan-service
+      - jaeger

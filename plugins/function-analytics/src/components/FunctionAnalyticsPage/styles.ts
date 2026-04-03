@@ -90,20 +90,20 @@ export const useStyles = makeStyles(theme => ({
     borderRadius: theme.spacing(1),
   },
   misplacedHighRisk: {
-    backgroundColor: '#ffcdd2',
-    color: '#b71c1c',
+    backgroundColor: '#f8bbd0 !important', // pink tone
+    color: '#880e4f',
     fontWeight: 'bold',
     '& .MuiTableCell-body': {
       color: '#b71c1c',
       fontWeight: 'bold',
     },
     '& .MuiChip-root': {
-      backgroundColor: '#f44336',
+      backgroundColor: '#e91e63 !important',
       color: '#ffffff',
     },
   },
   misplacedMediumRisk: {
-    backgroundColor: '#ffe0b2',
+    backgroundColor: '#ffe0b2 !important',
     color: '#e65100',
     fontWeight: 'bold',
     '& .MuiTableCell-body': {
@@ -116,7 +116,7 @@ export const useStyles = makeStyles(theme => ({
     },
   },
   misplacedLowRisk: {
-    backgroundColor: '#fff9c4',
+    backgroundColor: '#fff9c4 !important',
     color: '#f57f17',
     fontWeight: 'bold',
     '& .MuiTableCell-body': {
@@ -129,7 +129,7 @@ export const useStyles = makeStyles(theme => ({
     },
   },
   wellPlaced: {
-    backgroundColor: 'inherit',
+    backgroundColor: 'inherit !important',
     color: 'inherit',
     '& .MuiTableCell-body': {
       color: theme.palette.text.primary,

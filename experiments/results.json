@@ -1,0 +1,956 @@
+{
+  "exp2": {
+    "label": "Experiment 2 — Library Management (library-demo)",
+    "rq1": {
+      "TP": 2,
+      "FP": 1,
+      "FN": 0,
+      "TN": 4,
+      "precision": 0.6666666666666666,
+      "recall": 1,
+      "f1": 0.8,
+      "detail": [
+        {
+          "scenario": "exp2",
+          "functionName": "POST /calculate-late-fee",
+          "currentService": "book-service",
+          "label": "misplaced",
+          "outcome": "TP",
+          "result": {
+            "functionName": "POST /calculate-late-fee",
+            "currentService": "book-service",
+            "internalCalls": 0,
+            "externalCalls": 145,
+            "dominantCaller": "loan-service",
+            "dominantPercent": 0.993103448275862,
+            "avgInternalLatency": 0,
+            "avgExternalLatency": 4.538358620689656,
+            "recommendation": "relocate",
+            "suggestedService": "loan-service",
+            "externalPct": 100
+          }
+        },
+        {
+          "scenario": "exp2",
+          "functionName": "POST /members/:id/validate",
+          "currentService": "member-service",
+          "label": "misplaced",
+          "outcome": "TP",
+          "result": {
+            "functionName": "POST /members/:id/validate",
+            "currentService": "member-service",
+            "internalCalls": 0,
+            "externalCalls": 294,
+            "dominantCaller": "loan-service",
+            "dominantPercent": 1,
+            "avgInternalLatency": 0,
+            "avgExternalLatency": 3.943404761904762,
+            "recommendation": "relocate",
+            "suggestedService": "loan-service",
+            "externalPct": 100
+          }
+        },
+        {
+          "scenario": "exp2",
+          "functionName": "POST /loans",
+          "currentService": "loan-service",
+          "label": "well-placed",
+          "outcome": "TN",
+          "result": {
+            "functionName": "POST /loans",
+            "currentService": "loan-service",
+            "internalCalls": 0,
+            "externalCalls": 294,
+            "dominantCaller": "external (client)",
+            "dominantPercent": 1,
+            "avgInternalLatency": 0,
+            "avgExternalLatency": 20.062751700680266,
+            "recommendation": "review",
+            "suggestedService": null,
+            "externalPct": 100
+          }
+        },
+        {
+          "scenario": "exp2",
+          "functionName": "POST /loans/:id/return",
+          "currentService": "loan-service",
+          "label": "well-placed",
+          "outcome": "TN",
+          "result": {
+            "functionName": "POST /loans/:id/return",
+            "currentService": "loan-service",
+            "internalCalls": 0,
+            "externalCalls": 144,
+            "dominantCaller": "external (client)",
+            "dominantPercent": 1,
+            "avgInternalLatency": 0,
+            "avgExternalLatency": 12.065708333333331,
+            "recommendation": "review",
+            "suggestedService": null,
+            "externalPct": 100
+          }
+        },
+        {
+          "scenario": "exp2",
+          "functionName": "GET /books/:id",
+          "currentService": "book-service",
+          "label": "well-placed",
+          "outcome": "FP",
+          "result": {
+            "functionName": "GET /books/:id",
+            "currentService": "book-service",
+            "internalCalls": 0,
+            "externalCalls": 248,
+            "dominantCaller": "loan-service",
+            "dominantPercent": 0.9838709677419355,
+            "avgInternalLatency": 0,
+            "avgExternalLatency": 4.215624999999999,
+            "recommendation": "relocate",
+            "suggestedService": "loan-service",
+            "externalPct": 100
+          }
+        },
+        {
+          "scenario": "exp2",
+          "functionName": "GET /books",
+          "currentService": "book-service",
+          "label": "well-placed",
+          "outcome": "TN"
+        },
+        {
+          "scenario": "exp2",
+          "functionName": "GET /members/:id",
+          "currentService": "member-service",
+          "label": "well-placed",
+          "outcome": "TN"
+        }
+      ]
+    },
+    "rq2": [
+      {
+        "n": 5,
+        "results": [
+          {
+            "fn": "POST /calculate-late-fee",
+            "service": "book-service",
+            "detected": "YES",
+            "extPct": 100,
+            "totalCalls": 1
+          },
+          {
+            "fn": "POST /members/:id/validate",
+            "service": "member-service",
+            "detected": "YES",
+            "extPct": 100,
+            "totalCalls": 4
+          }
+        ],
+        "detectedCount": 2,
+        "total": 2
+      },
+      {
+        "n": 10,
+        "results": [
+          {
+            "fn": "POST /calculate-late-fee",
+            "service": "book-service",
+            "detected": "YES",
+            "extPct": 100,
+            "totalCalls": 4
+          },
+          {
+            "fn": "POST /members/:id/validate",
+            "service": "member-service",
+            "detected": "YES",
+            "extPct": 100,
+            "totalCalls": 6
+          }
+        ],
+        "detectedCount": 2,
+        "total": 2
+      },
+      {
+        "n": 25,
+        "results": [
+          {
+            "fn": "POST /calculate-late-fee",
+            "service": "book-service",
+            "detected": "YES",
+            "extPct": 100,
+            "totalCalls": 7
+          },
+          {
+            "fn": "POST /members/:id/validate",
+            "service": "member-service",
+            "detected": "YES",
+            "extPct": 100,
+            "totalCalls": 18
+          }
+        ],
+        "detectedCount": 2,
+        "total": 2
+      },
+      {
+        "n": 50,
+        "results": [
+          {
+            "fn": "POST /calculate-late-fee",
+            "service": "book-service",
+            "detected": "YES",
+            "extPct": 100,
+            "totalCalls": 18
+          },
+          {
+            "fn": "POST /members/:id/validate",
+            "service": "member-service",
+            "detected": "YES",
+            "extPct": 100,
+            "totalCalls": 32
+          }
+        ],
+        "detectedCount": 2,
+        "total": 2
+      },
+      {
+        "n": 100,
+        "results": [
+          {
+            "fn": "POST /calculate-late-fee",
+            "service": "book-service",
+            "detected": "YES",
+            "extPct": 100,
+            "totalCalls": 39
+          },
+          {
+            "fn": "POST /members/:id/validate",
+            "service": "member-service",
+            "detected": "YES",
+            "extPct": 100,
+            "totalCalls": 60
+          }
+        ],
+        "detectedCount": 2,
+        "total": 2
+      },
+      {
+        "n": 200,
+        "results": [
+          {
+            "fn": "POST /calculate-late-fee",
+            "service": "book-service",
+            "detected": "YES",
+            "extPct": 100,
+            "totalCalls": 68
+          },
+          {
+            "fn": "POST /members/:id/validate",
+            "service": "member-service",
+            "detected": "YES",
+            "extPct": 100,
+            "totalCalls": 128
+          }
+        ],
+        "detectedCount": 2,
+        "total": 2
+      },
+      {
+        "n": "447 (all)",
+        "results": [
+          {
+            "fn": "POST /calculate-late-fee",
+            "service": "book-service",
+            "detected": "YES",
+            "extPct": 100,
+            "totalCalls": 145
+          },
+          {
+            "fn": "POST /members/:id/validate",
+            "service": "member-service",
+            "detected": "YES",
+            "extPct": 100,
+            "totalCalls": 294
+          }
+        ],
+        "detectedCount": 2,
+        "total": 2
+      }
+    ],
+    "traceCount": 447
+  },
+  "exp1": {
+    "label": "Experiment 1 — E-Commerce Checkout (lightweight-otel-demo)",
+    "rq1": {
+      "TP": 2,
+      "FP": 0,
+      "FN": 0,
+      "TN": 7,
+      "precision": 1,
+      "recall": 1,
+      "f1": 1,
+      "detail": [
+        {
+          "scenario": "exp1",
+          "functionName": "GET /validate",
+          "currentService": "auth-service",
+          "label": "misplaced",
+          "outcome": "TP",
+          "result": {
+            "functionName": "GET /validate",
+            "currentService": "auth-service",
+            "internalCalls": 0,
+            "externalCalls": 500,
+            "dominantCaller": "gateway-service",
+            "dominantPercent": 1,
+            "avgInternalLatency": 0,
+            "avgExternalLatency": 20.188981999999978,
+            "recommendation": "relocate",
+            "suggestedService": "gateway-service",
+            "externalPct": 100
+          }
+        },
+        {
+          "scenario": "exp1",
+          "functionName": "GET /products",
+          "currentService": "product-service",
+          "label": "misplaced",
+          "outcome": "TP",
+          "result": {
+            "functionName": "GET /products",
+            "currentService": "product-service",
+            "internalCalls": 0,
+            "externalCalls": 100,
+            "dominantCaller": "gateway-service",
+            "dominantPercent": 1,
+            "avgInternalLatency": 0,
+            "avgExternalLatency": 54.47748999999999,
+            "recommendation": "relocate",
+            "suggestedService": "gateway-service",
+            "externalPct": 100
+          }
+        },
+        {
+          "scenario": "exp1",
+          "functionName": "auth-validate-endpoint",
+          "currentService": "auth-service",
+          "label": "well-placed",
+          "outcome": "TN",
+          "result": {
+            "functionName": "auth-validate-endpoint",
+            "currentService": "auth-service",
+            "internalCalls": 500,
+            "externalCalls": 0,
+            "dominantCaller": "none",
+            "dominantPercent": 0,
+            "avgInternalLatency": 18.425032000000005,
+            "avgExternalLatency": 0,
+            "recommendation": "keep",
+            "suggestedService": null,
+            "externalPct": 0
+          }
+        },
+        {
+          "scenario": "exp1",
+          "functionName": "auth-extractTokenHash",
+          "currentService": "auth-service",
+          "label": "well-placed",
+          "outcome": "TN",
+          "result": {
+            "functionName": "auth-extractTokenHash",
+            "currentService": "auth-service",
+            "internalCalls": 500,
+            "externalCalls": 0,
+            "dominantCaller": "none",
+            "dominantPercent": 0,
+            "avgInternalLatency": 11.063047999999998,
+            "avgExternalLatency": 0,
+            "recommendation": "keep",
+            "suggestedService": null,
+            "externalPct": 0
+          }
+        },
+        {
+          "scenario": "exp1",
+          "functionName": "auth-internalValidationStep",
+          "currentService": "auth-service",
+          "label": "well-placed",
+          "outcome": "TN",
+          "result": {
+            "functionName": "auth-internalValidationStep",
+            "currentService": "auth-service",
+            "internalCalls": 500,
+            "externalCalls": 0,
+            "dominantCaller": "none",
+            "dominantPercent": 0,
+            "avgInternalLatency": 6.025736000000003,
+            "avgExternalLatency": 0,
+            "recommendation": "keep",
+            "suggestedService": null,
+            "externalPct": 0
+          }
+        },
+        {
+          "scenario": "exp1",
+          "functionName": "product-list-endpoints",
+          "currentService": "product-service",
+          "label": "well-placed",
+          "outcome": "TN",
+          "result": {
+            "functionName": "product-list-endpoints",
+            "currentService": "product-service",
+            "internalCalls": 100,
+            "externalCalls": 0,
+            "dominantCaller": "none",
+            "dominantPercent": 0,
+            "avgInternalLatency": 52.45057,
+            "avgExternalLatency": 0,
+            "recommendation": "keep",
+            "suggestedService": null,
+            "externalPct": 0
+          }
+        },
+        {
+          "scenario": "exp1",
+          "functionName": "product-fetchFromDB",
+          "currentService": "product-service",
+          "label": "well-placed",
+          "outcome": "TN",
+          "result": {
+            "functionName": "product-fetchFromDB",
+            "currentService": "product-service",
+            "internalCalls": 100,
+            "externalCalls": 0,
+            "dominantCaller": "none",
+            "dominantPercent": 0,
+            "avgInternalLatency": 50.90964000000001,
+            "avgExternalLatency": 0,
+            "recommendation": "keep",
+            "suggestedService": null,
+            "externalPct": 0
+          }
+        },
+        {
+          "scenario": "exp1",
+          "functionName": "GET /api/checkout",
+          "currentService": "gateway-service",
+          "label": "well-placed",
+          "outcome": "TN",
+          "result": {
+            "functionName": "GET /api/checkout",
+            "currentService": "gateway-service",
+            "internalCalls": 0,
+            "externalCalls": 100,
+            "dominantCaller": "external (client)",
+            "dominantPercent": 1,
+            "avgInternalLatency": 0,
+            "avgExternalLatency": 186.58564,
+            "recommendation": "review",
+            "suggestedService": null,
+            "externalPct": 100
+          }
+        },
+        {
+          "scenario": "exp1",
+          "functionName": "gateway-checkout-flow",
+          "currentService": "gateway-service",
+          "label": "well-placed",
+          "outcome": "TN",
+          "result": {
+            "functionName": "gateway-checkout-flow",
+            "currentService": "gateway-service",
+            "internalCalls": 100,
+            "externalCalls": 0,
+            "dominantCaller": "none",
+            "dominantPercent": 0,
+            "avgInternalLatency": 184.55971999999997,
+            "avgExternalLatency": 0,
+            "recommendation": "keep",
+            "suggestedService": null,
+            "externalPct": 0
+          }
+        }
+      ]
+    },
+    "rq2": [
+      {
+        "n": 5,
+        "results": [
+          {
+            "fn": "GET /validate",
+            "service": "auth-service",
+            "detected": "YES",
+            "extPct": 100,
+            "totalCalls": 5
+          },
+          {
+            "fn": "GET /products",
+            "service": "product-service",
+            "detected": "YES",
+            "extPct": 100,
+            "totalCalls": 1
+          }
+        ],
+        "detectedCount": 2,
+        "total": 2
+      },
+      {
+        "n": 10,
+        "results": [
+          {
+            "fn": "GET /validate",
+            "service": "auth-service",
+            "detected": "YES",
+            "extPct": 100,
+            "totalCalls": 5
+          },
+          {
+            "fn": "GET /products",
+            "service": "product-service",
+            "detected": "YES",
+            "extPct": 100,
+            "totalCalls": 1
+          }
+        ],
+        "detectedCount": 2,
+        "total": 2
+      },
+      {
+        "n": 25,
+        "results": [
+          {
+            "fn": "GET /validate",
+            "service": "auth-service",
+            "detected": "YES",
+            "extPct": 100,
+            "totalCalls": 5
+          },
+          {
+            "fn": "GET /products",
+            "service": "product-service",
+            "detected": "YES",
+            "extPct": 100,
+            "totalCalls": 1
+          }
+        ],
+        "detectedCount": 2,
+        "total": 2
+      },
+      {
+        "n": 50,
+        "results": [
+          {
+            "fn": "GET /validate",
+            "service": "auth-service",
+            "detected": "YES",
+            "extPct": 100,
+            "totalCalls": 20
+          },
+          {
+            "fn": "GET /products",
+            "service": "product-service",
+            "detected": "YES",
+            "extPct": 100,
+            "totalCalls": 4
+          }
+        ],
+        "detectedCount": 2,
+        "total": 2
+      },
+      {
+        "n": 100,
+        "results": [
+          {
+            "fn": "GET /validate",
+            "service": "auth-service",
+            "detected": "YES",
+            "extPct": 100,
+            "totalCalls": 45
+          },
+          {
+            "fn": "GET /products",
+            "service": "product-service",
+            "detected": "YES",
+            "extPct": 100,
+            "totalCalls": 9
+          }
+        ],
+        "detectedCount": 2,
+        "total": 2
+      },
+      {
+        "n": 200,
+        "results": [
+          {
+            "fn": "GET /validate",
+            "service": "auth-service",
+            "detected": "YES",
+            "extPct": 100,
+            "totalCalls": 125
+          },
+          {
+            "fn": "GET /products",
+            "service": "product-service",
+            "detected": "YES",
+            "extPct": 100,
+            "totalCalls": 25
+          }
+        ],
+        "detectedCount": 2,
+        "total": 2
+      },
+      {
+        "n": "689 (all)",
+        "results": [
+          {
+            "fn": "GET /validate",
+            "service": "auth-service",
+            "detected": "YES",
+            "extPct": 100,
+            "totalCalls": 500
+          },
+          {
+            "fn": "GET /products",
+            "service": "product-service",
+            "detected": "YES",
+            "extPct": 100,
+            "totalCalls": 100
+          }
+        ],
+        "detectedCount": 2,
+        "total": 2
+      }
+    ],
+    "traceCount": 689
+  },
+  "rq3": [
+    {
+      "threshold": 40,
+      "precision": 0.8,
+      "recall": 1,
+      "f1": 0.888888888888889,
+      "TP": 4,
+      "FP": 1,
+      "FN": 0,
+      "TN": 11,
+      "perScenario": {
+        "exp2": {
+          "TP": 2,
+          "FP": 1,
+          "FN": 0,
+          "TN": 4,
+          "precision": 0.6666666666666666,
+          "recall": 1,
+          "f1": 0.8
+        },
+        "exp1": {
+          "TP": 2,
+          "FP": 0,
+          "FN": 0,
+          "TN": 7,
+          "precision": 1,
+          "recall": 1,
+          "f1": 1
+        }
+      }
+    },
+    {
+      "threshold": 45,
+      "precision": 0.8,
+      "recall": 1,
+      "f1": 0.888888888888889,
+      "TP": 4,
+      "FP": 1,
+      "FN": 0,
+      "TN": 11,
+      "perScenario": {
+        "exp2": {
+          "TP": 2,
+          "FP": 1,
+          "FN": 0,
+          "TN": 4,
+          "precision": 0.6666666666666666,
+          "recall": 1,
+          "f1": 0.8
+        },
+        "exp1": {
+          "TP": 2,
+          "FP": 0,
+          "FN": 0,
+          "TN": 7,
+          "precision": 1,
+          "recall": 1,
+          "f1": 1
+        }
+      }
+    },
+    {
+      "threshold": 50,
+      "precision": 0.8,
+      "recall": 1,
+      "f1": 0.888888888888889,
+      "TP": 4,
+      "FP": 1,
+      "FN": 0,
+      "TN": 11,
+      "perScenario": {
+        "exp2": {
+          "TP": 2,
+          "FP": 1,
+          "FN": 0,
+          "TN": 4,
+          "precision": 0.6666666666666666,
+          "recall": 1,
+          "f1": 0.8
+        },
+        "exp1": {
+          "TP": 2,
+          "FP": 0,
+          "FN": 0,
+          "TN": 7,
+          "precision": 1,
+          "recall": 1,
+          "f1": 1
+        }
+      }
+    },
+    {
+      "threshold": 55,
+      "precision": 0.8,
+      "recall": 1,
+      "f1": 0.888888888888889,
+      "TP": 4,
+      "FP": 1,
+      "FN": 0,
+      "TN": 11,
+      "perScenario": {
+        "exp2": {
+          "TP": 2,
+          "FP": 1,
+          "FN": 0,
+          "TN": 4,
+          "precision": 0.6666666666666666,
+          "recall": 1,
+          "f1": 0.8
+        },
+        "exp1": {
+          "TP": 2,
+          "FP": 0,
+          "FN": 0,
+          "TN": 7,
+          "precision": 1,
+          "recall": 1,
+          "f1": 1
+        }
+      }
+    },
+    {
+      "threshold": 60,
+      "precision": 0.8,
+      "recall": 1,
+      "f1": 0.888888888888889,
+      "TP": 4,
+      "FP": 1,
+      "FN": 0,
+      "TN": 11,
+      "perScenario": {
+        "exp2": {
+          "TP": 2,
+          "FP": 1,
+          "FN": 0,
+          "TN": 4,
+          "precision": 0.6666666666666666,
+          "recall": 1,
+          "f1": 0.8
+        },
+        "exp1": {
+          "TP": 2,
+          "FP": 0,
+          "FN": 0,
+          "TN": 7,
+          "precision": 1,
+          "recall": 1,
+          "f1": 1
+        }
+      }
+    },
+    {
+      "threshold": 65,
+      "precision": 0.8,
+      "recall": 1,
+      "f1": 0.888888888888889,
+      "TP": 4,
+      "FP": 1,
+      "FN": 0,
+      "TN": 11,
+      "perScenario": {
+        "exp2": {
+          "TP": 2,
+          "FP": 1,
+          "FN": 0,
+          "TN": 4,
+          "precision": 0.6666666666666666,
+          "recall": 1,
+          "f1": 0.8
+        },
+        "exp1": {
+          "TP": 2,
+          "FP": 0,
+          "FN": 0,
+          "TN": 7,
+          "precision": 1,
+          "recall": 1,
+          "f1": 1
+        }
+      }
+    },
+    {
+      "threshold": 70,
+      "precision": 0.8,
+      "recall": 1,
+      "f1": 0.888888888888889,
+      "TP": 4,
+      "FP": 1,
+      "FN": 0,
+      "TN": 11,
+      "perScenario": {
+        "exp2": {
+          "TP": 2,
+          "FP": 1,
+          "FN": 0,
+          "TN": 4,
+          "precision": 0.6666666666666666,
+          "recall": 1,
+          "f1": 0.8
+        },
+        "exp1": {
+          "TP": 2,
+          "FP": 0,
+          "FN": 0,
+          "TN": 7,
+          "precision": 1,
+          "recall": 1,
+          "f1": 1
+        }
+      }
+    },
+    {
+      "threshold": 75,
+      "precision": 0.8,
+      "recall": 1,
+      "f1": 0.888888888888889,
+      "TP": 4,
+      "FP": 1,
+      "FN": 0,
+      "TN": 11,
+      "perScenario": {
+        "exp2": {
+          "TP": 2,
+          "FP": 1,
+          "FN": 0,
+          "TN": 4,
+          "precision": 0.6666666666666666,
+          "recall": 1,
+          "f1": 0.8
+        },
+        "exp1": {
+          "TP": 2,
+          "FP": 0,
+          "FN": 0,
+          "TN": 7,
+          "precision": 1,
+          "recall": 1,
+          "f1": 1
+        }
+      }
+    },
+    {
+      "threshold": 80,
+      "precision": 0.8,
+      "recall": 1,
+      "f1": 0.888888888888889,
+      "TP": 4,
+      "FP": 1,
+      "FN": 0,
+      "TN": 11,
+      "perScenario": {
+        "exp2": {
+          "TP": 2,
+          "FP": 1,
+          "FN": 0,
+          "TN": 4,
+          "precision": 0.6666666666666666,
+          "recall": 1,
+          "f1": 0.8
+        },
+        "exp1": {
+          "TP": 2,
+          "FP": 0,
+          "FN": 0,
+          "TN": 7,
+          "precision": 1,
+          "recall": 1,
+          "f1": 1
+        }
+      }
+    },
+    {
+      "threshold": 90,
+      "precision": 0.8,
+      "recall": 1,
+      "f1": 0.888888888888889,
+      "TP": 4,
+      "FP": 1,
+      "FN": 0,
+      "TN": 11,
+      "perScenario": {
+        "exp2": {
+          "TP": 2,
+          "FP": 1,
+          "FN": 0,
+          "TN": 4,
+          "precision": 0.6666666666666666,
+          "recall": 1,
+          "f1": 0.8
+        },
+        "exp1": {
+          "TP": 2,
+          "FP": 0,
+          "FN": 0,
+          "TN": 7,
+          "precision": 1,
+          "recall": 1,
+          "f1": 1
+        }
+      }
+    },
+    {
+      "threshold": 95,
+      "precision": 0.8,
+      "recall": 1,
+      "f1": 0.888888888888889,
+      "TP": 4,
+      "FP": 1,
+      "FN": 0,
+      "TN": 11,
+      "perScenario": {
+        "exp2": {
+          "TP": 2,
+          "FP": 1,
+          "FN": 0,
+          "TN": 4,
+          "precision": 0.6666666666666666,
+          "recall": 1,
+          "f1": 0.8
+        },
+        "exp1": {
+          "TP": 2,
+          "FP": 0,
+          "FN": 0,
+          "TN": 7,
+          "precision": 1,
+          "recall": 1,
+          "f1": 1
+        }
+      }
+    }
+  ]
+}
