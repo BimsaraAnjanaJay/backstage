@@ -36,6 +36,7 @@ const NOISE_PATTERNS = [
   'dns.lookup',
   'tcp.connect',
   'connect',
+  'lookup',         // bare DNS/net lookup spans (e.g. from @opentelemetry/instrumentation-dns)
   'readfilesync',
   'readfile',
   'realpathsync',
@@ -57,6 +58,7 @@ const NOISE_PATTERNS = [
   'stat',
   'request handler',
   'anonymous',
+  'unknown_function',
   'pg.',
   'mongodb.',
   'mongoose.',
@@ -98,13 +100,23 @@ export function analyzeFunctionCalls(rawTraces: any[]): FunctionAnalysis[] {
       );
       const isGenericHttp =
         lowerName === 'http' || !!functionName.match(/^HTTP [A-Z]+$/);
+
+      // A span that starts with a known noise prefix (e.g. "middleware - jsonParser")
+      // is infrastructure even if it contains a dash — never treat it as an app span.
+      const startsWithNoisePrefix = NOISE_PATTERNS.some(p =>
+        lowerName.startsWith(p),
+      );
       const isAppSpan =
-        functionName.startsWith('GET ') ||
-        functionName.startsWith('POST ') ||
-        functionName.includes('-') ||
-        functionName.includes('Step') ||
-        functionName.includes('Hash') ||
-        functionName.includes('Token');
+        !startsWithNoisePrefix &&
+        (functionName.startsWith('GET ') ||
+          functionName.startsWith('POST ') ||
+          functionName.startsWith('PUT ') ||
+          functionName.startsWith('DELETE ') ||
+          functionName.startsWith('PATCH ') ||
+          functionName.includes('-') ||
+          functionName.includes('Step') ||
+          functionName.includes('Hash') ||
+          functionName.includes('Token'));
 
       if ((isNoise || isGenericHttp) && !isAppSpan) return;
 
@@ -112,7 +124,7 @@ export function analyzeFunctionCalls(rawTraces: any[]): FunctionAnalysis[] {
         !isAppSpan &&
         !functionName.includes(' ') &&
         functionName === functionName.toLowerCase() &&
-        functionName.length < 15
+        functionName.length <= 3
       ) {
         return;
       }
@@ -121,8 +133,10 @@ export function analyzeFunctionCalls(rawTraces: any[]): FunctionAnalysis[] {
         `[Analysis] ✅ Accepting span: ${functionName} for service: ${serviceName}`,
       );
 
-      if (!functionStats.has(functionName)) {
-        functionStats.set(functionName, {
+      const key = `${serviceName}::${functionName}`;
+      if (!functionStats.has(key)) {
+        functionStats.set(key, {
+          fn: functionName,
           service: serviceName,
           internalCalls: 0,
           externalCalls: 0,
@@ -132,7 +146,7 @@ export function analyzeFunctionCalls(rawTraces: any[]): FunctionAnalysis[] {
         });
       }
 
-      const stats = functionStats.get(functionName);
+      const stats = functionStats.get(key);
       const latencyMs = (span.duration || 0) / 1000;
 
       let callerService = 'external (client)';

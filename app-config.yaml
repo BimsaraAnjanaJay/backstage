@@ -199,6 +199,14 @@ catalog:
 
     # Backstage example entities
     - type: file
+      target: ../../microservices/lightweight-otel-demo/catalog-info.yaml
+      rules:
+        - allow: [System, Component, API, Resource]
+    - type: file
+      target: ../../microservices/library-demo/catalog-info.yaml
+      rules:
+        - allow: [System, Component, API, Resource]
+    - type: file
       target: ../../microservices/Microservice/catalog-info.yaml
       rules:
         - allow: [System, Component, API, Resource]

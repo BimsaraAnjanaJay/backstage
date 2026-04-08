@@ -115,9 +115,28 @@ const getChipColor = (
  */
 export const FunctionAnalyticsPage = () => {
   const classes = useStyles();
+  const discoveryApi = useApi(discoveryApiRef);
   const catalogApi = useApi(catalogApiRef);
   const fetchApi = useApi(fetchApiRef);
-  const discoveryApi = useApi(discoveryApiRef);
+
+  // Use localStorage to preserve UI state across app-config.yaml hot-reloads
+  const [tabValue, setTabValue] = useState<number>(() => {
+    const saved = localStorage.getItem('fa-tabValue');
+    return saved !== null ? parseInt(saved, 10) : 0;
+  });
+  const [selectedService, setSelectedService] = useState<string>(() => {
+    return localStorage.getItem('fa-selectedService') || 'all';
+  });
+
+  useEffect(() => {
+    localStorage.setItem('fa-tabValue', tabValue.toString());
+  }, [tabValue]);
+
+  useEffect(() => {
+    localStorage.setItem('fa-selectedService', selectedService);
+  }, [selectedService]);
+
+  const [timeRange, setTimeRange] = useState('1h');
 
   // Plugin configuration state
   const [pluginMode, setPluginMode] = useState<PluginMode>({
@@ -141,9 +160,6 @@ export const FunctionAnalyticsPage = () => {
 
   // Data state
   const [hybridConfigs, setHybridConfigs] = useState<HybridServiceConfig[]>([]);
-  const [selectedService, setSelectedService] = useState<string>('all');
-  const [timeRange, setTimeRange] = useState('1h');
-  const [tabValue, setTabValue] = useState(0);
 
   // Loading and error states
   const [loading, setLoading] = useState(true);
@@ -884,7 +900,7 @@ export const FunctionAnalyticsPage = () => {
 
       for (const service of selectedGroupServices) {
         const startTime = Date.now();
-        const jaegerServiceName = getJaegerServiceName(service);
+        let jaegerServiceName = getJaegerServiceName(service);
         let deployStatus: 'started' | 'failed' | 'skipped' = 'skipped';
         let tracesInJaeger = 0;
         let traceQueryStatus: 'ok' | 'failed' = 'ok';
@@ -935,8 +951,13 @@ export const FunctionAnalyticsPage = () => {
           deployStatus = 'started';
           // eslint-disable-next-line no-console
           console.log(`✅ Service deployed: ${service.serviceName}`);
+          // Use the backend-resolved jaegerServiceName (reads actual OTEL_SERVICE_NAME from compose)
+          // so we query Jaeger with the right name (e.g. 'auth-service' vs 'auth').
+          if (deployResult.jaegerServiceName) {
+            jaegerServiceName = deployResult.jaegerServiceName;
+          }
           message = `Tracing started; generated ${
-            deployResult.tracesInJaeger || 0
+            deployResult.tracesInJaeger || deployResult.tracesGenerated || 0
           } traces`;
         } catch (deployErr) {
           deployStatus = 'failed';
@@ -1369,7 +1390,12 @@ export const FunctionAnalyticsPage = () => {
 
           {/* Tab 0: Configuration Wizard */}
           <TabPanel value={tabValue} index={0}>
-            <MicroserviceConfigWizard />
+            <MicroserviceConfigWizard 
+              onDeployComplete={(systemName) => {
+                setSelectedService(systemName);
+                setTabValue(1);
+              }} 
+            />
           </TabPanel>
 
           {/* Tab 1: Trace Viewer */}

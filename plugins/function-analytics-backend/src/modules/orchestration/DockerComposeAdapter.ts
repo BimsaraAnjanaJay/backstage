@@ -223,23 +223,92 @@ function applyOtelInjection(
 }
 
 /**
- * Injects OTel detector bypass and corrects the OTLP endpoint path in an
- * existing docker-compose file content string.
+ * Heuristically detects whether a compose service is Java-based.
  *
- * Used when a repo ships its own docker-compose.yml and we overlay OTEL config.
- * Preserves original port mappings, volumes, depends_on, and environment variables.
- * Adds Jaeger, injects OTEL env vars, and wraps startup command with OTEL SDK install.
+ * Checks the `image` name for known Java runtime/framework identifiers.
+ * Used to choose between Java-agent OTEL injection vs Node.js SDK injection.
+ */
+function isJavaService(svc: any): boolean {
+  const image: string = (svc.image || '').toLowerCase();
+  const JAVA_IMAGE_PATTERNS = [
+    'eclipse-temurin', 'openjdk', 'amazoncorretto', 'liberica', 'microsoft/java',
+    'azul/zulu', 'sapmachine', 'bellsoft', 'ibm-semeru',
+    // Spring Boot / Quarkus / other Java framework base images
+    'spring', 'quarkus', 'micronaut',
+    // Common project-specific images that are Java (detected by author prefix + no node/python)
+  ];
+  const NODE_IMAGE_PATTERNS = ['node', 'nodejs', 'deno', 'bun'];
+  const PYTHON_IMAGE_PATTERNS = ['python', 'pip', 'fastapi', 'flask', 'django'];
+
+  // If it explicitly says node/python, it's not java
+  if (NODE_IMAGE_PATTERNS.some(p => image.includes(p))) return false;
+  if (PYTHON_IMAGE_PATTERNS.some(p => image.includes(p))) return false;
+  if (JAVA_IMAGE_PATTERNS.some(p => image.includes(p))) return true;
+
+  // If it's a custom image (no build context) and entrypoint/command hints at java
+  const cmd = String(svc.command || svc.entrypoint || '').toLowerCase();
+  if (cmd.includes('java') || cmd.includes('.jar')) return true;
+
+  return false;
+}
+
+/** URL to download the OTel Java agent jar */
+export const JAVA_AGENT_DOWNLOAD =
+  'https://github.com/open-telemetry/opentelemetry-java-instrumentation/releases/latest/download/opentelemetry-javaagent.jar';
+
+/** Host path where the agent is pre-downloaded and made available to containers */
+export const OTEL_AGENT_HOST_PATH = '/tmp/otelcol-agent/opentelemetry-javaagent.jar';
+
+/**
+ * Strips bind-mount volumes that reference absolute host paths outside the
+ * project directory (e.g. $HOME/Projects/...). These break deployments on
+ * machines other than the original developer's.
+ *
+ * Named volumes (no `:` hostpath component) and relative paths are kept.
+ */
+function stripExternalVolumes(volumes: any[]): any[] {
+  if (!Array.isArray(volumes)) return volumes;
+  return volumes.filter(v => {
+    const s = String(v);
+    // Keep named volumes (no colon) and relative paths (./foo or ../foo)
+    if (!s.includes(':')) return true;
+    const hostPart = s.split(':')[0];
+    if (hostPart.startsWith('./') || hostPart.startsWith('../')) return true;
+    // Drop absolute paths and $HOME/... paths — they are machine-specific
+    if (hostPart.startsWith('/') || hostPart.startsWith('$')) return false;
+    return true;
+  });
+}
+
+/**
+ * Injects OTel into an existing docker-compose file content string.
+ *
+ * Strategy per service:
+ * - **Java** (detected by image name): inject `JAVA_TOOL_OPTIONS=-javaagent`
+ *   via environment — NEVER override the command (the JVM picks up the agent automatically).
+ * - **Node.js / default**: inject OTEL env vars; add `node otel-server.js` command
+ *   only if no existing command is set.
+ *
+ * Also:
+ * - Adds Jaeger to ALL custom networks so every service can reach it.
+ * - Strips machine-specific host volume bind-mounts ($HOME/... or absolute paths).
+ * - Skips databases, caches, traffic-generators, and Jaeger itself.
  */
 export function injectOtelIntoComposeContent(content: string): string {
   const compose: any = yaml.parse(content);
   if (!compose.services) return content;
 
-  // Add Jaeger if not already present (uses default network — visible to all services)
+  // Collect ALL custom networks defined in the compose file (except default bridge)
+  const customNetworks: string[] = Object.keys(compose.networks || {}).filter(
+    n => n !== 'default',
+  );
+
+  // Add Jaeger if not already present, and put it on ALL custom networks
   const hasJaeger = Object.values(compose.services).some((svc: any) =>
     svc.image?.includes('jaeger'),
   );
   if (!hasJaeger) {
-    compose.services.jaeger = {
+    const jaegerSvc: any = {
       image: 'jaegertracing/all-in-one:latest',
       container_name: 'jaeger',
       environment: ['COLLECTOR_OTLP_ENABLED=true'],
@@ -251,19 +320,77 @@ export function injectOtelIntoComposeContent(content: string): string {
         '9411:9411',
       ],
     };
+    // Join every custom network so all services can reach Jaeger by hostname
+    if (customNetworks.length > 0) {
+      jaegerSvc.networks = customNetworks;
+    }
+    // Avoid port 9411 conflict with Zipkin tracing-server if one is already defined
+    const has9411 = Object.values(compose.services).some((svc: any) =>
+      Array.isArray(svc.ports) && svc.ports.some((p: any) => String(p).includes('9411')),
+    );
+    if (has9411) {
+      jaegerSvc.ports = jaegerSvc.ports.filter(
+        (p: string) => !String(p).includes('9411'),
+      );
+    }
+    compose.services.jaeger = jaegerSvc;
+  } else {
+    // Ensure existing Jaeger service is on all custom networks
+    const jaegerSvc = Object.values(compose.services).find(
+      (svc: any) => svc.image?.includes('jaeger'),
+    ) as any;
+    if (jaegerSvc && customNetworks.length > 0) {
+      if (!jaegerSvc.networks) {
+        jaegerSvc.networks = customNetworks;
+      } else if (Array.isArray(jaegerSvc.networks)) {
+        for (const n of customNetworks) {
+          if (!jaegerSvc.networks.includes(n)) jaegerSvc.networks.push(n);
+        }
+      } else if (typeof jaegerSvc.networks === 'object') {
+        for (const n of customNetworks) {
+          if (!jaegerSvc.networks[n]) jaegerSvc.networks[n] = null;
+        }
+      }
+    }
   }
+
+  // Infrastructure image patterns to skip (monitoring/observability/DB/broker images)
+  const INFRA_IMAGES = [
+    'jaeger', 'zipkin', 'openzipkin',
+    'mongo', 'redis', 'postgres', 'mysql', 'mariadb',
+    'rabbitmq', 'kafka', 'zookeeper',
+    'elasticsearch', 'kibana',
+    'prometheus', 'grafana', 'prom/',
+    'nginx', 'haproxy', 'traefik',
+  ];
+
+  // Service-name patterns that identify monitoring/observability infra (not business microservices)
+  const INFRA_SERVICE_NAMES = [
+    'tracingserver', 'zipkin', 'grafanaserver', 'prometheusserver',
+    'jaeger', 'adminserver', 'discoveryserver', 'configserver',
+  ];
+
+  // Traffic generator service name patterns to skip
+  const TRAFFIC_PATTERNS = ['trafficgenerator', 'loadgenerator', 'loadtest'];
 
   for (const [name, svcRaw] of Object.entries(compose.services)) {
     const svc = svcRaw as any;
-    // Skip infrastructure images — do not inject OTEL into databases, caches, etc.
-    if (
-      svc.image?.includes('jaeger') ||
-      svc.image?.includes('mongo') ||
-      svc.image?.includes('redis') ||
-      svc.image?.includes('postgres') ||
-      svc.image?.includes('mysql')
-    )
-      continue;
+
+    // Skip infrastructure images
+    if (INFRA_IMAGES.some(p => svc.image?.toLowerCase().includes(p))) continue;
+
+    // Skip services whose name identifies them as monitoring/observability infra
+    const nameNorm = name.toLowerCase().replace(/-/g, '');
+    if (INFRA_SERVICE_NAMES.some(p => nameNorm.includes(p))) continue;
+
+    // Skip traffic generators
+    if (TRAFFIC_PATTERNS.some(p => nameNorm.includes(p))) continue;
+
+    // Strip machine-specific external volume mounts
+    if (Array.isArray(svc.volumes)) {
+      svc.volumes = stripExternalVolumes(svc.volumes);
+      if (svc.volumes.length === 0) delete svc.volumes;
+    }
 
     // Normalise environment to string-array form, preserving existing vars
     let envList: string[] = [];
@@ -272,31 +399,85 @@ export function injectOtelIntoComposeContent(content: string): string {
     } else if (svc.environment && typeof svc.environment === 'object') {
       envList = Object.entries(svc.environment).map(([k, v]) => `${k}=${v}`);
     }
-    // Preserve original OTEL_SERVICE_NAME if present — repos like lightweight-otel-demo
-    // ship their own meaningful name (e.g. "auth-service") which is better than the raw
-    // compose service key ("auth"). Fall back to the compose key when not set.
+
+    // Preserve original OTEL_SERVICE_NAME when set by the repo
     const originalServiceName = envList
       .find((e: string) => e.startsWith('OTEL_SERVICE_NAME='))
       ?.split('=')
       .slice(1)
       .join('=');
 
-    // Strip stale OTEL vars so we can re-inject cleanly
+    // Strip stale OTEL vars so we can re-inject cleanly (also strip NODE_OPTIONS, PORT only for Node)
     envList = envList.filter(
-      (e: string) => !e.startsWith('OTEL_') && !e.startsWith('NODE_OPTIONS='),
-    );
-    envList.push(
-      'OTEL_TRACES_EXPORTER=otlp',
-      `OTEL_SERVICE_NAME=${originalServiceName || name}`,
-      'OTEL_RESOURCE_ATTRIBUTES=service.namespace=production',
-      // Port 4318 is the OTLP HTTP endpoint; must match the protocol below
-      'OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318',
-      // Explicitly set HTTP/protobuf so the SDK doesn't default to gRPC (port 4317)
-      'OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf',
-      'OTEL_NODE_RESOURCE_DETECTORS=env,host,os,process',
+      (e: string) =>
+        !e.startsWith('OTEL_') &&
+        !e.startsWith('NODE_OPTIONS=') &&
+        !e.startsWith('JAVA_TOOL_OPTIONS='),
     );
 
-    // Add Jaeger dependency while preserving existing depends_on (e.g. mongo-db)
+    const java = isJavaService(svc);
+
+    if (java) {
+      // ── Java services ───────────────────────────────────────────────────
+      // Strategy: the OTel Java agent is pre-downloaded to the host at
+      // OTEL_AGENT_HOST_PATH and bind-mounted into the container at /tmp/otel-agent.jar.
+      // JAVA_TOOL_OPTIONS then auto-loads it for ANY java process — including the
+      // image's own ENTRYPOINT — with NO command override required.
+      envList.push(
+        'OTEL_TRACES_EXPORTER=otlp',
+        `OTEL_SERVICE_NAME=${originalServiceName || name}`,
+        'OTEL_RESOURCE_ATTRIBUTES=service.namespace=production',
+        'OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317',
+        'OTEL_EXPORTER_OTLP_PROTOCOL=grpc',
+        'JAVA_TOOL_OPTIONS=-javaagent:/tmp/otel-agent.jar',
+      );
+
+      // Bind-mount the pre-downloaded agent from the host.
+      // The router ensures the file exists before docker compose up is called.
+      if (!svc.volumes) svc.volumes = [];
+      // Only add if not already present
+      const agentMount = `${OTEL_AGENT_HOST_PATH}:/tmp/otel-agent.jar:ro`;
+      if (!svc.volumes.some((v: string) => String(v).includes('otel-agent.jar'))) {
+        svc.volumes.push(agentMount);
+      }
+
+      // For pre-built images (no command/entrypoint override): leave them completely
+      // untouched — JAVA_TOOL_OPTIONS + the volume mount is all we need.
+      // Only if the service already has a custom command do we know the startup
+      // pattern and can safely wrap it.
+    } else {
+      // ── Node.js / other services ────────────────────────────────────────
+      envList.push(
+        'OTEL_TRACES_EXPORTER=otlp',
+        `OTEL_SERVICE_NAME=${originalServiceName || name}`,
+        'OTEL_RESOURCE_ATTRIBUTES=service.namespace=production',
+        'OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318',
+        'OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf',
+        'OTEL_NODE_RESOURCE_DETECTORS=env,host,os,process',
+      );
+
+      // Inject PORT only when the container uses port 3000 or has no port mapping
+      if (!envList.some((e: string) => e.startsWith('PORT='))) {
+        let containerPort: string | null = null;
+        if (Array.isArray(svc.ports) && svc.ports.length > 0) {
+          const parts = String(svc.ports[0]).split(':');
+          containerPort = parts[parts.length - 1].split('/')[0];
+        }
+        if (!containerPort || containerPort === '3000') {
+          envList.push('PORT=3000');
+        }
+      }
+
+      // Only add the otel-server.js startup wrapper when the service has no command.
+      // Repos with their own instrumentation (instrument.js, etc.) keep their command.
+      if (!svc.command) {
+        svc.command = 'node otel-server.js';
+      }
+    }
+
+    svc.environment = envList;
+
+    // Add Jaeger dependency while preserving existing depends_on
     if (!svc.depends_on) {
       svc.depends_on = ['jaeger'];
     } else if (Array.isArray(svc.depends_on)) {
@@ -305,37 +486,8 @@ export function injectOtelIntoComposeContent(content: string): string {
       if (!svc.depends_on.jaeger)
         svc.depends_on.jaeger = { condition: 'service_started' };
     }
-
-    // Only inject PORT if the service doesn't already have one in its environment.
-    // Derive the container-side port from the compose port mapping (HOST:CONTAINER format).
-    // This avoids overriding services that bind to non-3000 ports (e.g. 8080, 8082).
-    if (!envList.some((e: string) => e.startsWith('PORT='))) {
-      let containerPort: string | null = null;
-      if (Array.isArray(svc.ports) && svc.ports.length > 0) {
-        // Port mappings can be "HOST:CONTAINER" strings or numeric values
-        const firstPort = String(svc.ports[0]);
-        const parts = firstPort.split(':');
-        containerPort = parts[parts.length - 1].split('/')[0]; // strip /tcp if present
-      }
-      // Only inject PORT=3000 when no port mapping exists (no compose ports defined)
-      // or when the container port is explicitly 3000. For other ports, the service
-      // already knows its own port — don't override it.
-      if (!containerPort || containerPort === '3000') {
-        envList.push('PORT=3000');
-      }
-    }
-    svc.environment = envList;
-
-    // Startup: use the original command when present (repos with own OTEL setup like
-    // lightweight-otel-demo using instrument.js), or fall back to node otel-server.js
-    // for repos like RajGM/Microservice where ServerWrapperGenerator creates the wrapper.
-    // OTEL packages are now installed at build time by DockerfileFixerAdapter, so no
-    // runtime npm install is needed here.
-    if (!svc.command) {
-      svc.command = 'node otel-server.js';
-    }
-    // If a command already exists, preserve it unchanged.
   }
 
   return yaml.stringify(compose, { lineWidth: 0 });
 }
+

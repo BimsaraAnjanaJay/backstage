@@ -63,7 +63,11 @@ const steps = [
   'Deploy & Trace',
 ];
 
-export const MicroserviceConfigWizard = () => {
+interface MicroserviceConfigWizardProps {
+  onDeployComplete?: (systemName: string) => void;
+}
+
+export const MicroserviceConfigWizard = ({ onDeployComplete }: MicroserviceConfigWizardProps = {}) => {
   const [activeStep, setActiveStep] = useState(0);
   const [repoUrl, setRepoUrl] = useState('');
   const [repoName, setRepoName] = useState('');
@@ -118,6 +122,7 @@ export const MicroserviceConfigWizard = () => {
     ];
 
     setConfigStatus(statusUpdates);
+    setActiveStep(2);
 
     try {
       for (let i = 0; i < statusUpdates.length; i++) {
@@ -146,8 +151,6 @@ export const MicroserviceConfigWizard = () => {
         statusUpdates[i].message = data.message;
         setConfigStatus([...statusUpdates]);
       }
-
-      setActiveStep(2);
     } catch (err: any) {
       const failedStep = statusUpdates.find(s => s.status === 'running');
       if (failedStep) {
@@ -183,7 +186,12 @@ export const MicroserviceConfigWizard = () => {
 
       const data = await response.json();
       setDeployedServices(data.services);
-      setActiveStep(3);
+      
+      if (onDeployComplete) {
+        onDeployComplete(`system:${repoName}`);
+      } else {
+        setActiveStep(3);
+      }
     } catch (err: any) {
       setError(err.message);
       errorApi.post(new Error(`Deployment failed: ${err.message}`));

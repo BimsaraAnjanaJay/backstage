@@ -34,6 +34,48 @@ const NOISE_OPERATIONS = [
 ];
 
 /**
+ * Span-name prefixes/patterns that identify framework/infrastructure spans.
+ * These are filtered before normalization so they never reach the functions table.
+ */
+const INFRA_SPAN_PATTERNS = [
+  'middleware -',
+  'router -',
+  'express.',
+  'expressInit',
+  'jsonParser',
+  'corsmiddleware',
+  'dns.',
+  'dns.lookup',
+  'tcp.',
+  'tcp.connect',
+  'net.',
+  'fs.',
+  'pg.',
+  'mongodb.',
+  'mongoose.',
+  'sequelize.',
+  'knex.',
+];
+
+/** Exact span names that are pure infrastructure noise. */
+const INFRA_EXACT = new Set([
+  'connect', 'lookup', 'query', 'close', 'open', 'read', 'write', 'stat',
+  'access', 'tcp', 'dns', 'http', 'unknown_function', 'anonymous',
+  'request handler', 'GET', 'POST', 'PUT', 'DELETE', 'PATCH',
+]);
+
+function isInfraSpan(operationName: string): boolean {
+  if (!operationName) return true;
+  const lower = operationName.toLowerCase();
+  if (INFRA_EXACT.has(operationName) || INFRA_EXACT.has(lower)) return true;
+  return INFRA_SPAN_PATTERNS.some(
+    p => lower === p.toLowerCase() ||
+         lower.startsWith(p.toLowerCase()) ||
+         lower.includes(p.toLowerCase()),
+  );
+}
+
+/**
  * Normalizes raw span operation names to clean function names.
  * Extracted verbatim from lib/preprocess.ts `normalizeFunctionName()`.
  */
@@ -99,6 +141,9 @@ export function preprocessTraces(rawTraces: any[]): CleanedCall[] {
       const duration = span.duration || 0;
 
       if (NOISE_OPERATIONS.some(noise => operationName?.includes(noise))) {
+        continue;
+      }
+      if (isInfraSpan(operationName)) {
         continue;
       }
       if (!operationName) continue;
