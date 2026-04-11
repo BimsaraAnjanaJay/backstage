@@ -25,7 +25,8 @@ export interface CleanedCall {
 }
 
 /**
- * Analysis results for a single function
+ * Analysis results for a single function.
+ * Extended with per-caller breakdown and sample count for confidence scoring.
  */
 export interface FunctionAnalysis {
   functionName: string;
@@ -36,10 +37,18 @@ export interface FunctionAnalysis {
   dominantPercent: number;
   avgInternalLatency: number;
   avgExternalLatency: number;
+  /** Total calls observed — used to compute confidence (low sample = low confidence). */
+  sampleCount: number;
+  /** All external callers and their call counts. Used for bidirectional detection. */
+  callerServices: Record<string, number>;
 }
 
+/** Risk level assigned based on how strongly a function is misplaced. */
+export type RiskLevel = 'HIGH' | 'MEDIUM' | 'LOW' | 'NONE';
+
 /**
- * Final relocation recommendation result
+ * Final relocation recommendation result.
+ * Extended with quality metrics for better decision support.
  */
 export interface RelocationResult {
   functionName: string;
@@ -50,5 +59,58 @@ export interface RelocationResult {
   dominantCaller: string;
   dominantPercent: number;
   predictedLatencyImprovement: number;
-  recommendation: 'relocate' | 'keep' | 'review';
+  recommendation: 'relocate' | 'keep' | 'review' | 'extract';
+
+  /**
+   * Statistical confidence 0–1.
+   * < 0.5  = fewer than MIN_SAMPLES observations (treat with caution)
+   * >= 1.0 = fully reliable (>= MIN_SAMPLES observations)
+   */
+  confidence: number;
+
+  /**
+   * Projected improvement in system-wide cohesion if the relocation is applied.
+   * Positive = cohesion improves; 0 = neutral.
+   */
+  cohesionDelta: number;
+
+  /** Risk level derived from the external-call percentage. */
+  riskLevel: RiskLevel;
+
+  /**
+   * True when the function is called substantially by TWO OR MORE different
+   * external services — relocation to one side hurts the other.
+   * Recommendation becomes 'extract' (move to a shared library/service).
+   */
+  isSharedUtility: boolean;
+
+  /**
+   * True when relocating this function to suggestedService would create a
+   * circular dependency between the two services.
+   */
+  circularRisk: boolean;
+}
+
+/**
+ * A single entry in a per-service function registry built by static analysis.
+ */
+export interface RegistryFunction {
+  name: string;
+  /** Class or module name, if applicable. */
+  className?: string;
+  /** Source file relative to service root. */
+  file: string;
+  /** Language of the owning service. */
+  language: string;
+}
+
+/**
+ * Complete function registry for one service, produced by FunctionRegistryBuilder.
+ */
+export interface ServiceFunctionRegistry {
+  service: string;
+  language: string;
+  functions: RegistryFunction[];
+  /** ISO timestamp when the registry was built. */
+  builtAt: string;
 }

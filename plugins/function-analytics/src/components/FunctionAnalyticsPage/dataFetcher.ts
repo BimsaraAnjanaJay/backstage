@@ -21,7 +21,10 @@ import {
   ServiceMetrics,
   HybridServiceConfig,
 } from './types';
-import { fetchJaegerServiceMetrics } from './jaegerService';
+import {
+  fetchJaegerServiceMetrics,
+  clearJaegerServicesCache,
+} from './jaegerService';
 
 /**
  * Fetches metrics from a tracing backend (currently supports Jaeger only)
@@ -31,9 +34,15 @@ const fetchServiceMetricsFromBackend = async (
   backend: TracingBackendConfig,
   timeRange: string,
   fetchApi: { fetch: typeof fetch },
-  proxyBaseUrl?: string
+  proxyBaseUrl?: string,
 ): Promise<ServiceMetrics> => {
-  return fetchJaegerServiceMetrics(serviceName, backend, timeRange, fetchApi, proxyBaseUrl);
+  return fetchJaegerServiceMetrics(
+    serviceName,
+    backend,
+    timeRange,
+    fetchApi,
+    proxyBaseUrl,
+  );
 };
 
 /**
@@ -46,9 +55,12 @@ export const fetchHybridServiceMetrics = async (
   defaultBackend: TracingBackendConfig,
   timeRange: string,
   fetchApi: { fetch: typeof fetch },
-  proxyBaseUrl?: string
+  proxyBaseUrl?: string,
 ): Promise<HybridServiceConfig[]> => {
   const hybridConfigs: HybridServiceConfig[] = [];
+
+  // Clear cached Jaeger service list so each fetch cycle gets fresh data
+  clearJaegerServicesCache();
 
   // Process catalog services
   for (const catalogService of catalogServices) {
@@ -62,7 +74,7 @@ export const fetchHybridServiceMetrics = async (
         backend,
         timeRange,
         fetchApi,
-        proxyBaseUrl
+        proxyBaseUrl,
       );
 
       hybridConfigs.push({
@@ -71,12 +83,16 @@ export const fetchHybridServiceMetrics = async (
         owner: catalogService.owner,
         environment: catalogService.environment,
         config: catalogService,
-        connectionStatus: serviceMetrics.functions.length > 0 ? 'connected' : 'disconnected',
+        connectionStatus:
+          serviceMetrics.functions.length > 0 ? 'connected' : 'disconnected',
         lastChecked: new Date(),
       });
     } catch (error) {
       // eslint-disable-next-line no-console
-      console.error(`Error fetching catalog service ${catalogService.serviceName}:`, error);
+      console.error(
+        `Error fetching catalog service ${catalogService.serviceName}:`,
+        error,
+      );
       hybridConfigs.push({
         serviceName: catalogService.serviceName,
         totalCalls: 0,
@@ -100,7 +116,7 @@ export const fetchHybridServiceMetrics = async (
         manualService.jaegerServiceName || manualService.serviceName,
         manualService.tracingBackend,
         timeRange,
-        fetchApi
+        fetchApi,
       );
 
       hybridConfigs.push({
@@ -108,12 +124,16 @@ export const fetchHybridServiceMetrics = async (
         source: 'manual',
         environment: manualService.environment,
         config: manualService,
-        connectionStatus: serviceMetrics.functions.length > 0 ? 'connected' : 'disconnected',
+        connectionStatus:
+          serviceMetrics.functions.length > 0 ? 'connected' : 'disconnected',
         lastChecked: new Date(),
       });
     } catch (error) {
       // eslint-disable-next-line no-console
-      console.error(`Error fetching manual service ${manualService.serviceName}:`, error);
+      console.error(
+        `Error fetching manual service ${manualService.serviceName}:`,
+        error,
+      );
       hybridConfigs.push({
         serviceName: manualService.serviceName,
         totalCalls: 0,

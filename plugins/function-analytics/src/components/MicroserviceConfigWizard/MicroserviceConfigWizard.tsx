@@ -39,7 +39,59 @@ import SettingsIcon from '@material-ui/icons/Settings';
 import CheckCircleIcon from '@material-ui/icons/CheckCircle';
 import ErrorIcon from '@material-ui/icons/Error';
 import VisibilityIcon from '@material-ui/icons/Visibility';
+import WarningIcon from '@material-ui/icons/Warning';
 import { useApi, configApiRef, errorApiRef } from '@backstage/core-plugin-api';
+
+/** Maps backend errorType values to user-facing hints and remediation steps. */
+const ERROR_HINTS: Record<string, { title: string; steps: string[] }> = {
+  docker_unavailable: {
+    title: 'Docker is not running',
+    steps: [
+      'Start Docker Desktop (Mac/Windows) or run: sudo systemctl start docker',
+      'Wait for Docker to fully start, then try again',
+    ],
+  },
+  port_conflict: {
+    title: 'A required port is already in use',
+    steps: [
+      'Stop any other services using the conflicting port (check docker ps)',
+      'Or run: docker system prune --volumes to free stopped containers',
+      'Then try again',
+    ],
+  },
+  network_error: {
+    title: 'Network error during deployment',
+    steps: [
+      'Check your internet connection',
+      'Verify Docker Hub access: docker pull hello-world',
+      'If behind a proxy, configure Docker daemon proxy settings',
+    ],
+  },
+  disk_full: {
+    title: 'Disk space is too low',
+    steps: [
+      'Free space by running: docker system prune -af --volumes',
+      'Remove unused images: docker image prune -af',
+      'Then try again',
+    ],
+  },
+  build_failed: {
+    title: 'One or more services failed to build',
+    steps: [
+      'Check the error message for which service failed',
+      'Ensure the service directory has a valid Dockerfile (auto-generated ones are a best-effort)',
+      'For Java: ensure pom.xml or build.gradle is present in the service directory',
+      'Check backend logs for the full build output',
+    ],
+  },
+  not_found: {
+    title: 'Repository or resource not found',
+    steps: [
+      'Verify the Git URL is correct and publicly accessible',
+      'Ensure the repository exists and is not private (or provide credentials)',
+    ],
+  },
+};
 
 interface DetectedService {
   name: string;
@@ -67,38 +119,54 @@ interface MicroserviceConfigWizardProps {
   onDeployComplete?: (systemName: string) => void;
 }
 
-export const MicroserviceConfigWizard = ({ onDeployComplete }: MicroserviceConfigWizardProps = {}) => {
+export const MicroserviceConfigWizard = ({
+  onDeployComplete,
+}: MicroserviceConfigWizardProps = {}) => {
   const [activeStep, setActiveStep] = useState(0);
   const [repoUrl, setRepoUrl] = useState('');
   const [repoName, setRepoName] = useState('');
   const [loading, setLoading] = useState(false);
-  const [detectedServices, setDetectedServices] = useState<DetectedService[]>([]);
+  const [loadingMsg, setLoadingMsg] = useState('');
+  const [detectedServices, setDetectedServices] = useState<DetectedService[]>(
+    [],
+  );
   const [configStatus, setConfigStatus] = useState<ConfigurationStatus[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [errorType, setErrorType] = useState<string | null>(null);
   const [deployedServices, setDeployedServices] = useState<any[]>([]);
+  const [partialFailures, setPartialFailures] = useState<string[]>([]);
 
   const configApi = useApi(configApiRef);
   const errorApi = useApi(errorApiRef);
 
   const backendUrl = configApi.getString('backend.baseUrl');
 
+  const clearError = () => {
+    setError(null);
+    setErrorType(null);
+  };
+
   const handleDetectServices = async () => {
     setLoading(true);
-    setError(null);
+    setLoadingMsg('Cloning repository (shallow)...');
+    clearError();
 
     try {
-      const response = await fetch(`${backendUrl}/api/function-analytics/microservice/detect`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ repoUrl }),
-      });
+      const response = await fetch(
+        `${backendUrl}/api/function-analytics/microservice/detect`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ repoUrl }),
+        },
+      );
 
+      const data = await response.json();
       if (!response.ok) {
-        const data = await response.json();
+        setErrorType(data.errorType ?? 'not_found');
         throw new Error(data.error || 'Failed to detect services');
       }
 
-      const data = await response.json();
       setDetectedServices(data.services);
       setRepoName(data.repoName);
       setActiveStep(1);
@@ -107,12 +175,14 @@ export const MicroserviceConfigWizard = ({ onDeployComplete }: MicroserviceConfi
       errorApi.post(new Error(`Service detection failed: ${err.message}`));
     } finally {
       setLoading(false);
+      setLoadingMsg('');
     }
   };
 
   const handleGenerateConfig = async () => {
     setLoading(true);
-    setError(null);
+    setLoadingMsg('Generating configuration files...');
+    clearError();
 
     const statusUpdates: ConfigurationStatus[] = [
       { step: 'docker-compose', status: 'pending' },
@@ -127,26 +197,33 @@ export const MicroserviceConfigWizard = ({ onDeployComplete }: MicroserviceConfi
     try {
       for (let i = 0; i < statusUpdates.length; i++) {
         statusUpdates[i].status = 'running';
+        setLoadingMsg(
+          `Generating ${statusUpdates[i].step.replace(/-/g, ' ')}...`,
+        );
         setConfigStatus([...statusUpdates]);
 
-        const response = await fetch(`${backendUrl}/api/function-analytics/microservice/generate`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            repoName,
-            repoUrl,
-            services: detectedServices,
-            step: statusUpdates[i].step,
-          }),
-        });
-
-        if (!response.ok) {
-          const data = await response.json();
-          throw new Error(data.error || `Failed to generate ${statusUpdates[i].step}`);
-        }
+        const response = await fetch(
+          `${backendUrl}/api/function-analytics/microservice/generate`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              repoName,
+              repoUrl,
+              services: detectedServices,
+              step: statusUpdates[i].step,
+            }),
+          },
+        );
 
         const data = await response.json();
-        
+        if (!response.ok) {
+          setErrorType(data.errorType ?? 'build_failed');
+          throw new Error(
+            data.error || `Failed to generate ${statusUpdates[i].step}`,
+          );
+        }
+
         statusUpdates[i].status = 'success';
         statusUpdates[i].message = data.message;
         setConfigStatus([...statusUpdates]);
@@ -162,31 +239,43 @@ export const MicroserviceConfigWizard = ({ onDeployComplete }: MicroserviceConfi
       errorApi.post(new Error(`Configuration failed: ${err.message}`));
     } finally {
       setLoading(false);
+      setLoadingMsg('');
     }
   };
 
   const handleDeploy = async () => {
     setLoading(true);
-    setError(null);
+    setLoadingMsg('Checking Docker and deploying services...');
+    clearError();
+    setPartialFailures([]);
 
     try {
-      const response = await fetch(`${backendUrl}/api/function-analytics/microservice/deploy`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          repoName,
-          services: detectedServices,
-        }),
-      });
+      const response = await fetch(
+        `${backendUrl}/api/function-analytics/microservice/deploy`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            repoName,
+            services: detectedServices,
+          }),
+        },
+      );
 
+      const data = await response.json();
       if (!response.ok) {
-        const data = await response.json();
+        setErrorType(data.errorType ?? 'build_failed');
         throw new Error(data.error || 'Failed to deploy services');
       }
 
-      const data = await response.json();
-      setDeployedServices(data.services);
-      
+      setDeployedServices(data.services ?? []);
+
+      // Show partial failures if some services didn't start
+      const failed = (data.services ?? [])
+        .filter((s: any) => !s.running)
+        .map((s: any) => s.name);
+      if (failed.length > 0) setPartialFailures(failed);
+
       if (onDeployComplete) {
         onDeployComplete(`system:${repoName}`);
       } else {
@@ -197,6 +286,7 @@ export const MicroserviceConfigWizard = ({ onDeployComplete }: MicroserviceConfi
       errorApi.post(new Error(`Deployment failed: ${err.message}`));
     } finally {
       setLoading(false);
+      setLoadingMsg('');
     }
   };
 
@@ -218,8 +308,8 @@ export const MicroserviceConfigWizard = ({ onDeployComplete }: MicroserviceConfi
               helperText="Enter the Git URL of your microservice repository"
               margin="normal"
             />
-            
-              <Box mt={3}>
+
+            <Box mt={3}>
               <Typography variant="body2" color="textSecondary" gutterBottom>
                 Supported Languages:
               </Typography>
@@ -260,9 +350,13 @@ export const MicroserviceConfigWizard = ({ onDeployComplete }: MicroserviceConfi
                 size="large"
                 onClick={handleDetectServices}
                 disabled={!repoUrl || loading}
-                startIcon={loading ? <CircularProgress size={20} /> : <PlayArrowIcon />}
+                startIcon={
+                  loading ? <CircularProgress size={20} /> : <PlayArrowIcon />
+                }
               >
-                {loading ? 'Detecting Services...' : 'Start Configuration'}
+                {loading
+                  ? loadingMsg || 'Detecting Services...'
+                  : 'Start Configuration'}
               </Button>
             </Box>
           </Box>
@@ -274,7 +368,7 @@ export const MicroserviceConfigWizard = ({ onDeployComplete }: MicroserviceConfi
             <Typography variant="h6" gutterBottom>
               Detected Services in {repoName}
             </Typography>
-            
+
             {detectedServices.length === 0 ? (
               <Alert severity="warning">
                 No services detected. Please verify your repository structure.
@@ -282,7 +376,8 @@ export const MicroserviceConfigWizard = ({ onDeployComplete }: MicroserviceConfi
             ) : (
               <>
                 <Alert severity="success" style={{ marginBottom: 16 }}>
-                  Found {detectedServices.length} service(s) ready for configuration
+                  Found {detectedServices.length} service(s) ready for
+                  configuration
                 </Alert>
 
                 <Grid container spacing={2}>
@@ -290,41 +385,58 @@ export const MicroserviceConfigWizard = ({ onDeployComplete }: MicroserviceConfi
                     <Grid item xs={12} md={6} key={index}>
                       <Card variant="outlined">
                         <CardContent>
-                          <Box display="flex" justifyContent="space-between" alignItems="center" mb={2}>
+                          <Box
+                            display="flex"
+                            justifyContent="space-between"
+                            alignItems="center"
+                            mb={2}
+                          >
                             <Typography variant="h6">{service.name}</Typography>
-                            <Chip 
-                              label={service.language.toUpperCase()} 
-                              color="primary" 
+                            <Chip
+                              label={service.language.toUpperCase()}
+                              color="primary"
                               size="small"
                             />
                           </Box>
-                          
-                          <Typography variant="body2" color="textSecondary" gutterBottom>
+
+                          <Typography
+                            variant="body2"
+                            color="textSecondary"
+                            gutterBottom
+                          >
                             📁 Path: {service.path}
                           </Typography>
-                          <Typography variant="body2" color="textSecondary" gutterBottom>
+                          <Typography
+                            variant="body2"
+                            color="textSecondary"
+                            gutterBottom
+                          >
                             🔌 Port: {service.port}
                           </Typography>
                           {service.entrypoint && (
-                            <Typography variant="body2" color="textSecondary" gutterBottom>
+                            <Typography
+                              variant="body2"
+                              color="textSecondary"
+                              gutterBottom
+                            >
                               🚀 Entry: {service.entrypoint}
                             </Typography>
                           )}
 
                           <Box mt={2} display="flex" style={{ gap: 8 }}>
                             {service.hasDockerfile && (
-                              <Chip 
-                                icon={<CheckCircleIcon />} 
-                                label="Has Dockerfile" 
-                                size="small" 
+                              <Chip
+                                icon={<CheckCircleIcon />}
+                                label="Has Dockerfile"
+                                size="small"
                                 color="default"
                                 variant="outlined"
                               />
                             )}
-                            <Chip 
-                              icon={<CheckCircleIcon />} 
-                              label="OpenTelemetry Ready" 
-                              size="small" 
+                            <Chip
+                              icon={<CheckCircleIcon />}
+                              label="OpenTelemetry Ready"
+                              size="small"
                               color="secondary"
                               variant="outlined"
                             />
@@ -345,7 +457,13 @@ export const MicroserviceConfigWizard = ({ onDeployComplete }: MicroserviceConfi
                     size="large"
                     onClick={handleGenerateConfig}
                     disabled={loading || detectedServices.length === 0}
-                    startIcon={loading ? <CircularProgress size={20} /> : <SettingsIcon />}
+                    startIcon={
+                      loading ? (
+                        <CircularProgress size={20} />
+                      ) : (
+                        <SettingsIcon />
+                      )
+                    }
                   >
                     {loading ? 'Generating...' : 'Generate Configuration'}
                   </Button>
@@ -367,14 +485,26 @@ export const MicroserviceConfigWizard = ({ onDeployComplete }: MicroserviceConfi
                 <Box key={index} mb={2}>
                   <Paper variant="outlined" style={{ padding: 16 }}>
                     <Box display="flex" alignItems="center" style={{ gap: 16 }}>
-                      {status.status === 'pending' && <CircularProgress size={24} />}
-                      {status.status === 'running' && <CircularProgress size={24} />}
-                      {status.status === 'success' && <CheckCircleIcon style={{ color: '#4caf50', fontSize: 32 }} />}
-                      {status.status === 'error' && <ErrorIcon style={{ color: '#f44336', fontSize: 32 }} />}
-                      
+                      {status.status === 'pending' && (
+                        <CircularProgress size={24} />
+                      )}
+                      {status.status === 'running' && (
+                        <CircularProgress size={24} />
+                      )}
+                      {status.status === 'success' && (
+                        <CheckCircleIcon
+                          style={{ color: '#4caf50', fontSize: 32 }}
+                        />
+                      )}
+                      {status.status === 'error' && (
+                        <ErrorIcon style={{ color: '#f44336', fontSize: 32 }} />
+                      )}
+
                       <Box flex={1}>
                         <Typography variant="body1" style={{ fontWeight: 500 }}>
-                          {status.step.replace(/-/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}
+                          {status.step
+                            .replace(/-/g, ' ')
+                            .replace(/\b\w/g, l => l.toUpperCase())}
                         </Typography>
                         {status.message && (
                           <Typography variant="body2" color="textSecondary">
@@ -395,31 +525,35 @@ export const MicroserviceConfigWizard = ({ onDeployComplete }: MicroserviceConfi
                 </Alert>
 
                 <Box mt={3}>
-                  <Typography variant="body2" color="textSecondary" gutterBottom>
+                  <Typography
+                    variant="body2"
+                    color="textSecondary"
+                    gutterBottom
+                  >
                     Generated Files:
                   </Typography>
                   <List dense>
                     <ListItem>
-                      <ListItemText 
+                      <ListItemText
                         primary="✓ docker-compose.otel.yml"
                         secondary="Docker Compose with Jaeger and OpenTelemetry"
                       />
                     </ListItem>
                     <ListItem>
-                      <ListItemText 
+                      <ListItemText
                         primary="✓ catalog-info.yaml"
                         secondary="Backstage catalog entries for all services"
                       />
                     </ListItem>
                     <ListItem>
-                      <ListItemText 
+                      <ListItemText
                         primary="✓ Startup scripts"
                         secondary="Scripts to manage services"
                       />
                     </ListItem>
                     {detectedServices.some(s => s.language === 'go') && (
                       <ListItem>
-                        <ListItemText 
+                        <ListItemText
                           primary="✓ tracing.go"
                           secondary="OpenTelemetry instrumentation for Go"
                         />
@@ -438,9 +572,17 @@ export const MicroserviceConfigWizard = ({ onDeployComplete }: MicroserviceConfi
                     size="large"
                     onClick={handleDeploy}
                     disabled={loading}
-                    startIcon={loading ? <CircularProgress size={20} /> : <PlayArrowIcon />}
+                    startIcon={
+                      loading ? (
+                        <CircularProgress size={20} />
+                      ) : (
+                        <PlayArrowIcon />
+                      )
+                    }
                   >
-                    {loading ? 'Deploying Services...' : 'Deploy & Start Tracing'}
+                    {loading
+                      ? loadingMsg || 'Deploying Services...'
+                      : 'Deploy & Start Tracing'}
                   </Button>
                 </Box>
               </>
@@ -451,10 +593,17 @@ export const MicroserviceConfigWizard = ({ onDeployComplete }: MicroserviceConfi
       case 3:
         return (
           <Box>
-            <Alert severity="success" icon={<CheckCircleIcon fontSize="large" />} style={{ marginBottom: 24 }}>
-              <Typography variant="h6">🎉 Services Deployed Successfully!</Typography>
+            <Alert
+              severity="success"
+              icon={<CheckCircleIcon fontSize="large" />}
+              style={{ marginBottom: 24 }}
+            >
+              <Typography variant="h6">
+                🎉 Services Deployed Successfully!
+              </Typography>
               <Typography variant="body2">
-                Your microservices are now running with distributed tracing enabled
+                Your microservices are now running with distributed tracing
+                enabled
               </Typography>
             </Alert>
 
@@ -469,7 +618,11 @@ export const MicroserviceConfigWizard = ({ onDeployComplete }: MicroserviceConfi
                     <Typography variant="h6" gutterBottom>
                       🔍 Jaeger Tracing UI
                     </Typography>
-                    <Typography variant="body2" color="textSecondary" gutterBottom>
+                    <Typography
+                      variant="body2"
+                      color="textSecondary"
+                      gutterBottom
+                    >
                       View distributed traces across all services
                     </Typography>
                     <Button
@@ -477,7 +630,9 @@ export const MicroserviceConfigWizard = ({ onDeployComplete }: MicroserviceConfi
                       color="primary"
                       fullWidth
                       style={{ marginTop: 8 }}
-                      onClick={() => window.open('http://localhost:16686', '_blank')}
+                      onClick={() =>
+                        window.open('http://localhost:16686', '_blank')
+                      }
                       startIcon={<VisibilityIcon />}
                     >
                       Open Jaeger UI
@@ -492,7 +647,11 @@ export const MicroserviceConfigWizard = ({ onDeployComplete }: MicroserviceConfi
                     <Typography variant="h6" gutterBottom>
                       📈 Function Analytics
                     </Typography>
-                    <Typography variant="body2" color="textSecondary" gutterBottom>
+                    <Typography
+                      variant="body2"
+                      color="textSecondary"
+                      gutterBottom
+                    >
                       Analyze function placement and performance
                     </Typography>
                     <Button
@@ -500,7 +659,9 @@ export const MicroserviceConfigWizard = ({ onDeployComplete }: MicroserviceConfi
                       color="secondary"
                       fullWidth
                       style={{ marginTop: 8 }}
-                      onClick={() => { window.location.href = '/function-analytics'; }}
+                      onClick={() => {
+                        window.location.href = '/function-analytics';
+                      }}
                       startIcon={<VisibilityIcon />}
                     >
                       View Analytics
@@ -516,7 +677,11 @@ export const MicroserviceConfigWizard = ({ onDeployComplete }: MicroserviceConfi
                       <Typography variant="h6" gutterBottom>
                         {service.name}
                       </Typography>
-                      <Typography variant="body2" color="textSecondary" gutterBottom>
+                      <Typography
+                        variant="body2"
+                        color="textSecondary"
+                        gutterBottom
+                      >
                         Running on port {service.port}
                       </Typography>
                       <Button
@@ -583,7 +748,8 @@ export const MicroserviceConfigWizard = ({ onDeployComplete }: MicroserviceConfi
         🚀 Microservice Configuration Wizard
       </Typography>
       <Typography variant="body1" color="textSecondary" paragraph>
-        Automatically configure any microservice repository for distributed tracing
+        Automatically configure any microservice repository for distributed
+        tracing
       </Typography>
 
       <Box mt={4} mb={4}>
@@ -597,8 +763,53 @@ export const MicroserviceConfigWizard = ({ onDeployComplete }: MicroserviceConfi
       </Box>
 
       {error && (
-        <Alert severity="error" onClose={() => setError(null)} style={{ marginBottom: 16 }}>
-          {error}
+        <Alert
+          severity="error"
+          icon={<ErrorIcon />}
+          onClose={clearError}
+          style={{ marginBottom: 16 }}
+        >
+          {errorType && ERROR_HINTS[errorType] ? (
+            <Box>
+              <Typography variant="body2" style={{ fontWeight: 600 }}>
+                {ERROR_HINTS[errorType].title}
+              </Typography>
+              <Typography
+                variant="body2"
+                style={{ marginTop: 4, marginBottom: 6 }}
+              >
+                {error}
+              </Typography>
+              <List dense disablePadding>
+                {ERROR_HINTS[errorType].steps.map((step, i) => (
+                  <ListItem key={i} style={{ paddingTop: 0, paddingBottom: 0 }}>
+                    <ListItemText
+                      primary={`${i + 1}. ${step}`}
+                      primaryTypographyProps={{ variant: 'body2' }}
+                    />
+                  </ListItem>
+                ))}
+              </List>
+            </Box>
+          ) : (
+            error
+          )}
+        </Alert>
+      )}
+
+      {partialFailures.length > 0 && (
+        <Alert
+          severity="warning"
+          icon={<WarningIcon />}
+          style={{ marginBottom: 16 }}
+        >
+          <Typography variant="body2" style={{ fontWeight: 600 }}>
+            Some services failed to start: {partialFailures.join(', ')}
+          </Typography>
+          <Typography variant="body2">
+            The remaining services are running. Check backend logs for build
+            errors. You can still view traces for the running services.
+          </Typography>
         </Alert>
       )}
 

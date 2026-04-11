@@ -491,8 +491,14 @@ export const FunctionAnalyticsPage = () => {
   // Aggregate data for display, explicitly filtering out default backstage catalog noise
   const allServices = hybridConfigs.filter(service => {
     if (service.source === 'catalog' && 'entity' in service.config) {
-      const sys = (service.config.entity.spec?.system as string) || 'backstage-core';
-      return !['backstage-core', 'podcast', 'artist-engagement-portal', 'audio-playback'].includes(sys);
+      const sys =
+        (service.config.entity.spec?.system as string) || 'backstage-core';
+      return ![
+        'backstage-core',
+        'podcast',
+        'artist-engagement-portal',
+        'audio-playback',
+      ].includes(sys);
     }
     return true;
   });
@@ -680,7 +686,10 @@ export const FunctionAnalyticsPage = () => {
     s => s.source === 'manual',
   ).length;
   const misplacedFunctions = backendAnalysis.filter(
-    (analysis: any) => analysis.recommendation === 'relocate',
+    (analysis: any) =>
+      analysis.recommendation === 'relocate' ||
+      analysis.recommendation === 'extract' ||
+      analysis.recommendation === 'review',
   );
   const selectedGroupServices = useMemo(() => {
     if (!selectedService.startsWith('system:')) {
@@ -1189,12 +1198,14 @@ export const FunctionAnalyticsPage = () => {
                   });
 
                   // Sort: microservice systems first, then manual, then backstage-core
-                  const sortedSystems = Array.from(
-                    servicesBySystem.entries(),
-                  )
+                  const sortedSystems = Array.from(servicesBySystem.entries())
                     .filter(
                       ([sys]) =>
-                        !['backstage-core', 'podcast', 'artist-engagement-portal'].includes(sys)
+                        ![
+                          'backstage-core',
+                          'podcast',
+                          'artist-engagement-portal',
+                        ].includes(sys),
                     )
                     .sort(([a], [b]) => {
                       if (a === 'manual-services') return 1;
@@ -1390,11 +1401,11 @@ export const FunctionAnalyticsPage = () => {
 
           {/* Tab 0: Configuration Wizard */}
           <TabPanel value={tabValue} index={0}>
-            <MicroserviceConfigWizard 
-              onDeployComplete={(systemName) => {
+            <MicroserviceConfigWizard
+              onDeployComplete={systemName => {
                 setSelectedService(systemName);
                 setTabValue(1);
-              }} 
+              }}
             />
           </TabPanel>
 
@@ -1754,12 +1765,18 @@ export const FunctionAnalyticsPage = () => {
                     <TableCell>Function Name</TableCell>
                     <TableCell>Current Service</TableCell>
                     <TableCell>Source</TableCell>
-                    <TableCell>Internal Calls %</TableCell>
-                    <TableCell>External Calls %</TableCell>
+                    <TableCell>Internal %</TableCell>
+                    <TableCell>External %</TableCell>
                     <TableCell>Risk Level</TableCell>
                     <TableCell>Recommended Action</TableCell>
                     <TableCell>Suggested Target Service</TableCell>
-                    <TableCell>Latency Impact (ms)</TableCell>
+                    <TableCell>Latency Impact</TableCell>
+                    <TableCell title="Statistical confidence based on sample count">
+                      Confidence
+                    </TableCell>
+                    <TableCell title="Projected cohesion improvement if relocated (positive = better)">
+                      Cohesion Δ
+                    </TableCell>
                   </TableRow>
                 </TableHead>
                 <TableBody>
@@ -1782,27 +1799,64 @@ export const FunctionAnalyticsPage = () => {
                             100
                           : 0;
 
-                      let riskLevel = 'LOW';
-                      if (analysis.recommendation === 'relocate') {
-                        riskLevel = externalPerc > 85 ? 'HIGH' : 'MEDIUM';
+                      // Use riskLevel from backend when available, compute locally as fallback
+                      let riskLevel: string = analysis.riskLevel || 'NONE';
+                      if (
+                        !analysis.riskLevel &&
+                        analysis.recommendation === 'relocate'
+                      ) {
+                        if (externalPerc > 85) riskLevel = 'HIGH';
+                        else if (externalPerc > 75) riskLevel = 'MEDIUM';
+                        else riskLevel = 'LOW';
                       }
 
-                      let recLabel = 'Keep';
+                      // Recommendation label — now includes 'extract' for shared utilities
+                      let recLabel = 'Well Placed';
                       if (analysis.recommendation === 'relocate')
-                        recLabel = 'Relocate';
+                        recLabel = `Relocate → ${
+                          analysis.suggestedService || '?'
+                        }`;
+                      else if (analysis.recommendation === 'extract')
+                        recLabel = 'Extract to Shared Library';
                       else if (analysis.recommendation === 'review')
-                        recLabel = 'Review Architecture';
+                        recLabel = analysis.circularRisk
+                          ? 'Review (Circular Risk)'
+                          : 'Review Architecture';
+
+                      const confidencePct =
+                        analysis.confidence !== undefined
+                          ? Math.round(analysis.confidence * 100)
+                          : 100;
+                      const cohesionDelta = analysis.cohesionDelta ?? 0;
 
                       return (
                         <TableRow
                           key={index}
                           className={getRowClassName(
                             riskLevel as any,
-                            analysis.recommendation === 'relocate',
+                            analysis.recommendation === 'relocate' ||
+                              analysis.recommendation === 'extract',
                             classes,
                           )}
                         >
-                          <TableCell>{analysis.functionName}</TableCell>
+                          <TableCell>
+                            <Box>
+                              <Typography
+                                variant="body2"
+                                style={{ fontWeight: 500 }}
+                              >
+                                {analysis.functionName}
+                              </Typography>
+                              {analysis.isSharedUtility && (
+                                <Typography
+                                  variant="caption"
+                                  color="textSecondary"
+                                >
+                                  shared utility
+                                </Typography>
+                              )}
+                            </Box>
+                          </TableCell>
                           <TableCell>{analysis.currentService}</TableCell>
                           <TableCell>
                             <Chip
@@ -1813,7 +1867,7 @@ export const FunctionAnalyticsPage = () => {
                                   <StorageIcon />
                                 )
                               }
-                              label={service?.source || 'unknown'}
+                              label={service?.source || 'trace'}
                               size="small"
                               className={classes.serviceSourceChip}
                             />
@@ -1833,14 +1887,65 @@ export const FunctionAnalyticsPage = () => {
                               size="small"
                             />
                           </TableCell>
-                          <TableCell>{recLabel}</TableCell>
                           <TableCell>
-                            {analysis.suggestedService || 'N/A'}
+                            <Box
+                              display="flex"
+                              alignItems="center"
+                              style={{ gap: 6 }}
+                            >
+                              <Typography variant="body2">
+                                {recLabel}
+                              </Typography>
+                              {analysis.circularRisk && (
+                                <CancelIcon
+                                  fontSize="small"
+                                  style={{ color: '#f44336' }}
+                                  titleAccess="Circular dependency risk"
+                                />
+                              )}
+                            </Box>
+                          </TableCell>
+                          <TableCell>
+                            {analysis.suggestedService ||
+                              (analysis.recommendation === 'extract'
+                                ? '(new shared service)'
+                                : 'N/A')}
                           </TableCell>
                           <TableCell>
                             {analysis.predictedLatencyImprovement
-                              ? analysis.predictedLatencyImprovement.toFixed(2)
-                              : '0.00'}
+                              ? `${analysis.predictedLatencyImprovement.toFixed(
+                                  2,
+                                )} ms`
+                              : '—'}
+                          </TableCell>
+                          <TableCell>
+                            <Box
+                              title={`${confidencePct}% confidence (${
+                                analysis.internalCalls + analysis.externalCalls
+                              } samples)`}
+                            >
+                              <Typography
+                                variant="caption"
+                                color={
+                                  confidencePct < 50 ? 'error' : 'textSecondary'
+                                }
+                              >
+                                {confidencePct}%
+                              </Typography>
+                            </Box>
+                          </TableCell>
+                          <TableCell>
+                            <Typography
+                              variant="caption"
+                              style={{
+                                color:
+                                  cohesionDelta > 0 ? '#4caf50' : '#f44336',
+                              }}
+                            >
+                              {cohesionDelta > 0
+                                ? `+${cohesionDelta.toFixed(3)}`
+                                : cohesionDelta.toFixed(3)}
+                            </Typography>
                           </TableCell>
                         </TableRow>
                       );
@@ -1848,7 +1953,7 @@ export const FunctionAnalyticsPage = () => {
                   ) : (
                     <TableRow>
                       <TableCell
-                        colSpan={9}
+                        colSpan={11}
                         style={{ textAlign: 'center', padding: '40px' }}
                       >
                         <Typography color="textSecondary">

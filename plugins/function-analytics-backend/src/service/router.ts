@@ -23,6 +23,7 @@ import * as fs from 'fs-extra';
 import * as path from 'path';
 import * as yaml from 'yaml';
 import { spawn } from 'child_process';
+import * as net from 'net';
 
 // Modules
 import { FraConfig } from '../modules/config/FraConfig';
@@ -44,6 +45,10 @@ import {
 } from '../modules/orchestration/ScriptGenerationAdapter';
 import { analyzeFunctionCalls } from '../modules/analysis/FunctionCallAnalyzer';
 import { applyDecisionLogic } from '../modules/analysis/RelocationDecisionEngine';
+import {
+  buildAllRegistries,
+  buildRegistryLookup,
+} from '../modules/static-analysis/FunctionRegistryBuilder';
 
 /**
  * Dependencies of the function-analytics router
@@ -62,16 +67,16 @@ const NATIVE_TRAFFIC_SCRIPTS: Array<{
   runner: string;
   args?: string[];
 }> = [
-    { file: 'traffic-generator.js', runner: 'node' },
-    { file: 'traffic_generator.js', runner: 'node' },
-    { file: 'generate-traffic.js', runner: 'node' },
-    { file: 'load-test.js', runner: 'node' },
-    { file: 'traffic-generator.py', runner: 'python3' },
-    { file: 'traffic_generator.py', runner: 'python3' },
-    { file: 'generate_traffic.py', runner: 'python3' },
-    { file: 'traffic-generator.sh', runner: 'sh' },
-    { file: 'generate-traffic.sh', runner: 'sh' },
-  ];
+  { file: 'traffic-generator.js', runner: 'node' },
+  { file: 'traffic_generator.js', runner: 'node' },
+  { file: 'generate-traffic.js', runner: 'node' },
+  { file: 'load-test.js', runner: 'node' },
+  { file: 'traffic-generator.py', runner: 'python3' },
+  { file: 'traffic_generator.py', runner: 'python3' },
+  { file: 'generate_traffic.py', runner: 'python3' },
+  { file: 'traffic-generator.sh', runner: 'sh' },
+  { file: 'generate-traffic.sh', runner: 'sh' },
+];
 
 // Names/patterns that identify a traffic-generator Docker service in compose files.
 // Used to decide whether to invoke it via `docker compose up` (inside Docker)
@@ -85,6 +90,155 @@ const DOCKER_TRAFFIC_SERVICE_PATTERNS = [
   'loadgenerator',
   'load-test',
 ];
+
+// ─── Pre-flight helpers ──────────────────────────────────────────────────────
+
+/**
+ * Returns true if the Docker daemon is reachable (docker info succeeds).
+ */
+async function isDockerAvailable(): Promise<boolean> {
+  return new Promise(resolve => {
+    const proc = spawn('docker', ['info'], { shell: true, timeout: 10000 });
+    proc.on('close', code => resolve(code === 0));
+    proc.on('error', () => resolve(false));
+  });
+}
+
+/**
+ * Returns true if the given TCP port is already in use on localhost.
+ */
+function isPortInUse(port: number): Promise<boolean> {
+  return new Promise(resolve => {
+    const server = net.createServer();
+    server.once('error', () => resolve(true));
+    server.once('listening', () => {
+      server.close(() => resolve(false));
+    });
+    server.listen(port, '127.0.0.1');
+  });
+}
+
+/**
+ * Reads a compose file, detects ports that are already bound on the host,
+ * and returns the list of conflicting service names.
+ */
+async function detectPortConflicts(
+  composeFilePath: string,
+  logger: LoggerService,
+): Promise<string[]> {
+  const conflicts: string[] = [];
+  try {
+    const composeData = yaml.parse(await fs.readFile(composeFilePath, 'utf-8'));
+    for (const [svcName, svcRaw] of Object.entries(
+      composeData.services || {},
+    )) {
+      const svc = svcRaw as any;
+      if (!Array.isArray(svc.ports)) continue;
+      for (const portDef of svc.ports) {
+        const hostPort = parseInt(String(portDef).split(':')[0], 10);
+        if (!isNaN(hostPort) && (await isPortInUse(hostPort))) {
+          logger.warn(
+            `Port ${hostPort} (service: ${svcName}) is already in use on the host`,
+          );
+          conflicts.push(svcName);
+          break;
+        }
+      }
+    }
+  } catch {
+    // Non-fatal
+  }
+  return conflicts;
+}
+
+/**
+ * Finds the first existing docker-compose file in a repo directory.
+ * Checks standard names and common subdirectory locations.
+ */
+async function findRootComposeFile(repoDir: string): Promise<string | null> {
+  const candidates = [
+    path.join(repoDir, 'docker-compose.yml'),
+    path.join(repoDir, 'docker-compose.yaml'),
+    path.join(repoDir, 'docker', 'docker-compose.yml'),
+    path.join(repoDir, 'docker', 'docker-compose.yaml'),
+    path.join(repoDir, 'deploy', 'docker-compose.yml'),
+    path.join(repoDir, 'deploy', 'docker-compose.yaml'),
+  ];
+  for (const c of candidates) {
+    if (await fs.pathExists(c)) return c;
+  }
+  return null;
+}
+
+/**
+ * Builds individual services one-by-one when the full `docker compose up --build`
+ * fails. This prevents one broken Dockerfile from stopping all other services.
+ *
+ * Returns the list of service names that built and started successfully.
+ */
+async function buildServicesWithRecovery(
+  repoDir: string,
+  composeFile: string,
+  logger: LoggerService,
+): Promise<{ succeeded: string[]; failed: string[] }> {
+  // Get service names from compose
+  let serviceNames: string[] = [];
+  try {
+    const composeData = yaml.parse(
+      await fs.readFile(path.join(repoDir, composeFile), 'utf-8'),
+    );
+    serviceNames = Object.keys(composeData.services || {});
+  } catch {
+    return { succeeded: [], failed: [] };
+  }
+
+  const succeeded: string[] = [];
+  const failed: string[] = [];
+
+  for (const svcName of serviceNames) {
+    await new Promise<void>(resolve => {
+      const proc = spawn(
+        'docker compose',
+        ['-f', composeFile, 'up', '-d', '--build', '--no-deps', svcName],
+        { cwd: repoDir, shell: true, timeout: 300000 },
+      );
+      let stderr = '';
+      proc.stderr?.on('data', (d: Buffer) => {
+        const txt = d.toString();
+        stderr += txt;
+        if (
+          txt.toLowerCase().includes('error') ||
+          txt.toLowerCase().includes('failed')
+        ) {
+          logger.warn(`[${svcName}] ${txt.trim()}`);
+        }
+      });
+      proc.stdout?.on('data', (d: Buffer) =>
+        logger.info(`[${svcName}] ${d.toString().trim()}`),
+      );
+      proc.on('close', code => {
+        if (code === 0) {
+          logger.info(`✅ Service '${svcName}' started successfully`);
+          succeeded.push(svcName);
+        } else {
+          logger.warn(
+            `⚠️ Service '${svcName}' failed to build/start (code ${code}): ${stderr.slice(
+              -300,
+            )}`,
+          );
+          failed.push(svcName);
+        }
+        resolve();
+      });
+      proc.on('error', () => {
+        failed.push(svcName);
+        resolve();
+      });
+    });
+  }
+
+  return { succeeded, failed };
+}
 
 /**
  * Tries to run a repo's traffic generator. Strategy (in priority order):
@@ -146,18 +300,31 @@ async function generateTrafficForRepo(
             ['-f', composeFile, 'up', '-d', trafficServiceName],
             { cwd: repoDir, shell: true, timeout: 60000 },
           );
-          up.stderr?.on('data', (d: Buffer) => logger.info(`[docker-traffic] ${d.toString().trim()}`));
-          up.stdout?.on('data', (d: Buffer) => logger.info(`[docker-traffic] ${d.toString().trim()}`));
+          up.stderr?.on('data', (d: Buffer) =>
+            logger.info(`[docker-traffic] ${d.toString().trim()}`),
+          );
+          up.stdout?.on('data', (d: Buffer) =>
+            logger.info(`[docker-traffic] ${d.toString().trim()}`),
+          );
           up.on('close', code => {
             if (code === 0) resolve();
-            else reject(new Error(`docker compose up ${trafficServiceName} exited ${code}`));
+            else
+              reject(
+                new Error(
+                  `docker compose up ${trafficServiceName} exited ${code}`,
+                ),
+              );
           });
           up.on('error', reject);
         });
 
         // Give the traffic generator time to exercise the services
         const trafficDurationMs = 60000;
-        logger.info(`⏳ Letting Docker traffic generator run for ${trafficDurationMs / 1000}s...`);
+        logger.info(
+          `⏳ Letting Docker traffic generator run for ${
+            trafficDurationMs / 1000
+          }s...`,
+        );
         await new Promise(r => setTimeout(r, trafficDurationMs));
 
         // Count approximate successful requests from container logs
@@ -165,7 +332,14 @@ async function generateTrafficForRepo(
         await new Promise<void>(resolve => {
           const logs = spawn(
             'docker compose',
-            ['-f', composeFile, 'logs', '--no-log-prefix', '--tail=500', trafficServiceName],
+            [
+              '-f',
+              composeFile,
+              'logs',
+              '--no-log-prefix',
+              '--tail=500',
+              trafficServiceName,
+            ],
             { cwd: repoDir, shell: true },
           );
           logs.stdout?.on('data', (d: Buffer) => {
@@ -176,8 +350,14 @@ async function generateTrafficForRepo(
           logs.on('close', () => resolve());
         });
 
-        const successCount = (logOutput.match(/status=20[01]|created|succeeded|201|\bcreated\b/gi) || []).length;
-        logger.info(`✅ Docker traffic generator: ~${successCount} successful requests logged`);
+        const successCount = (
+          logOutput.match(
+            /status=20[01]|created|succeeded|201|\bcreated\b/gi,
+          ) || []
+        ).length;
+        logger.info(
+          `✅ Docker traffic generator: ~${successCount} successful requests logged`,
+        );
         return Math.max(successCount, 1); // return at least 1 so callers know traffic ran
       }
     } catch (e) {
@@ -199,10 +379,16 @@ async function generateTrafficForRepo(
       if (candidate.runner === 'node') {
         const pkgJson = path.join(repoDir, 'package.json');
         const nodeModules = path.join(repoDir, 'node_modules');
-        if ((await fs.pathExists(pkgJson)) && !(await fs.pathExists(nodeModules))) {
+        if (
+          (await fs.pathExists(pkgJson)) &&
+          !(await fs.pathExists(nodeModules))
+        ) {
           logger.info('📦 Running npm install before traffic generator...');
           await new Promise<void>(resolve => {
-            const npm = spawn('npm', ['install', '--prefer-offline'], { cwd: repoDir, shell: true });
+            const npm = spawn('npm', ['install', '--prefer-offline'], {
+              cwd: repoDir,
+              shell: true,
+            });
             npm.on('close', () => resolve());
           });
         }
@@ -212,8 +398,12 @@ async function generateTrafficForRepo(
       let gatewayUrl = serviceUrls[0] || 'http://localhost:8080';
       try {
         if (await fs.pathExists(composePath)) {
-          const composeData = yaml.parse(await fs.readFile(composePath, 'utf-8'));
-          for (const [svcName, svcRaw] of Object.entries(composeData.services || {})) {
+          const composeData = yaml.parse(
+            await fs.readFile(composePath, 'utf-8'),
+          );
+          for (const [svcName, svcRaw] of Object.entries(
+            composeData.services || {},
+          )) {
             const s = svcRaw as any;
             if (s.image?.includes('jaeger')) continue;
             if (Array.isArray(s.ports) && s.ports.length > 0) {
@@ -234,7 +424,9 @@ async function generateTrafficForRepo(
         // keep default
       }
 
-      logger.info(`🌐 Using GATEWAY_URL=${gatewayUrl} for host-side traffic generator`);
+      logger.info(
+        `🌐 Using GATEWAY_URL=${gatewayUrl} for host-side traffic generator`,
+      );
 
       let resolved = 0;
       await new Promise<void>(resolve => {
@@ -258,7 +450,9 @@ async function generateTrafficForRepo(
           if (line) logger.warn(`[traffic] ${line}`);
         });
         proc.on('close', code => {
-          logger.info(`✅ Host traffic generator exited code=${code}, ~${resolved} requests`);
+          logger.info(
+            `✅ Host traffic generator exited code=${code}, ~${resolved} requests`,
+          );
           resolve();
         });
         proc.on('error', err => {
@@ -276,7 +470,10 @@ async function generateTrafficForRepo(
     `🔁 No traffic generator found — probing ${serviceUrls.length} service(s) directly`,
   );
 
-  const REQUESTS_PER_SERVICE = Math.max(50, Math.ceil(250 / Math.max(serviceUrls.length, 1)));
+  const REQUESTS_PER_SERVICE = Math.max(
+    50,
+    Math.ceil(250 / Math.max(serviceUrls.length, 1)),
+  );
   let totalSuccess = 0;
 
   for (const serviceUrl of serviceUrls) {
@@ -290,7 +487,10 @@ async function generateTrafficForRepo(
     for (let attempt = 0; attempt < 6; attempt++) {
       try {
         const probe = await fetch(`${serviceUrl}/`, { method: 'GET' });
-        if (probe.status < 500) { ready = true; break; }
+        if (probe.status < 500) {
+          ready = true;
+          break;
+        }
       } catch {
         // not ready yet
       }
@@ -315,7 +515,9 @@ async function generateTrafficForRepo(
       }
       await new Promise(r => setTimeout(r, 50));
     }
-    logger.info(`✅ ${serviceUrl}: ${success}/${REQUESTS_PER_SERVICE} requests succeeded`);
+    logger.info(
+      `✅ ${serviceUrl}: ${success}/${REQUESTS_PER_SERVICE} requests succeeded`,
+    );
     totalSuccess += success;
   }
 
@@ -391,7 +593,8 @@ export async function createRouter(
         );
 
         logger.info(
-          `Fetching traces for ${targetServices.length
+          `Fetching traces for ${
+            targetServices.length
           } services: ${targetServices.join(', ')}`,
         );
 
@@ -407,7 +610,8 @@ export async function createRouter(
             if (!r.ok) return [];
             const d = await r.json();
             logger.info(
-              `[Backend Step 1] Jaeger returned ${d.data?.length || 0
+              `[Backend Step 1] Jaeger returned ${
+                d.data?.length || 0
               } span records for ${svc}`,
             );
             return (d.data || []) as any[];
@@ -442,7 +646,8 @@ export async function createRouter(
 
       const analyzed = analyzeFunctionCalls(allTraces);
       logger.info(
-        `[Backend Step 2] Trace Parser found ${analyzed.length
+        `[Backend Step 2] Trace Parser found ${
+          analyzed.length
         } unique functions. Preview: ${JSON.stringify(analyzed).substring(
           0,
           300,
@@ -466,7 +671,7 @@ export async function createRouter(
     }
   });
 
-  // POST /microservice/detect - Detect services in repository
+  // POST /microservice/detect - Detect services in repository and build function registries
   router.post('/microservice/detect', async (req, res) => {
     const { repoUrl } = req.body;
 
@@ -483,13 +688,34 @@ export async function createRouter(
         );
       } else {
         const git = simpleGit();
-        logger.info(`Cloning repository to ${tmpDir}`);
-        await git.clone(repoUrl, tmpDir);
+        logger.info(`Shallow-cloning repository to ${tmpDir} (--depth=1)...`);
+        await git.clone(repoUrl, tmpDir, ['--depth=1', '--single-branch']);
       }
 
       await fixDockerfiles(tmpDir, logger);
 
       const services = await detectServices(tmpDir, config);
+
+      // Build static function registries for all detected services in parallel.
+      // These are persisted to disk so /registry/:repoName can serve them later
+      // and so the /analyze endpoint can cross-reference span names.
+      logger.info(
+        `Building function registries for ${services.length} services...`,
+      );
+      try {
+        const registries = await buildAllRegistries(services, tmpDir);
+        const registryPath = path.join(tmpDir, 'function-registry.json');
+        await fs.writeFile(registryPath, JSON.stringify(registries, null, 2));
+        const totalFunctions = registries.reduce(
+          (s, r) => s + r.functions.length,
+          0,
+        );
+        logger.info(
+          `Function registry built: ${totalFunctions} app functions across ${registries.length} services → ${registryPath}`,
+        );
+      } catch (regErr) {
+        logger.warn(`Function registry build failed (non-fatal): ${regErr}`);
+      }
 
       return res.json({ repoName, services, tmpDir });
     } catch (error) {
@@ -497,6 +723,45 @@ export async function createRouter(
       return res.status(500).json({
         error: error instanceof Error ? error.message : String(error),
       });
+    }
+  });
+
+  // GET /registry/:repoName - Return the static function registry for a repo
+  router.get('/registry/:repoName', async (req, res) => {
+    const { repoName } = req.params;
+    try {
+      const registryPath = path.join(
+        config.repoPath(repoName),
+        'function-registry.json',
+      );
+      if (!(await fs.pathExists(registryPath))) {
+        return res
+          .status(404)
+          .json({
+            error: 'Registry not found. Run /microservice/detect first.',
+          });
+      }
+      const registries = JSON.parse(await fs.readFile(registryPath, 'utf-8'));
+      const lookup = buildRegistryLookup(registries);
+      const summary = registries.map((r: any) => ({
+        service: r.service,
+        language: r.language,
+        functionCount: r.functions.length,
+        functions: r.functions.map((f: any) => f.name),
+      }));
+      return res.json({
+        repoName,
+        registries: summary,
+        totalFunctions: registries.reduce(
+          (s: number, r: any) => s + r.functions.length,
+          0,
+        ),
+        serviceCount: registries.length,
+        lookupKeys: Array.from(lookup.keys()),
+      });
+    } catch (error) {
+      logger.error(`Registry fetch failed: ${error}`);
+      return res.status(500).json({ error: String(error) });
     }
   });
 
@@ -596,16 +861,44 @@ export async function createRouter(
     try {
       logger.info(`Deploying services for ${repoName}`);
 
+      // ── Pre-flight: Docker daemon check ────────────────────────────────────
+      if (!(await isDockerAvailable())) {
+        return res.status(503).json({
+          error:
+            'Docker daemon is not running. Please start Docker Desktop or the Docker service and try again.',
+          errorType: 'docker_unavailable',
+        });
+      }
+
       const microservicesDir = config.repoPath(repoName);
 
       await fixDockerfiles(microservicesDir, logger);
 
+      const composeFile = 'docker-compose.otel.yml';
+      const composeFilePath = path.join(microservicesDir, composeFile);
+
+      // ── Port conflict pre-check ────────────────────────────────────────────
+      if (await fs.pathExists(composeFilePath)) {
+        const conflicting = await detectPortConflicts(composeFilePath, logger);
+        if (conflicting.length > 0) {
+          logger.warn(
+            `Port conflicts detected for: ${conflicting.join(
+              ', ',
+            )} — proceeding anyway (containers may fail)`,
+          );
+        }
+      }
+
       logger.info('Attempting to deploy all services...');
+      let fullDeploySucceeded = false;
+      let output = '';
+      let errorOutput = '';
+
       const dockerCompose = spawn(
         'docker compose',
         [
           '-f',
-          'docker-compose.otel.yml',
+          composeFile,
           'up',
           '-d',
           '--build',
@@ -614,9 +907,6 @@ export async function createRouter(
         ],
         { cwd: microservicesDir, shell: true, timeout: 300000 },
       );
-
-      let output = '';
-      let errorOutput = '';
 
       dockerCompose.stdout?.on('data', data => {
         const text = data.toString();
@@ -637,29 +927,43 @@ export async function createRouter(
         }
       });
 
-      await new Promise((resolve, reject) => {
+      await new Promise<void>(resolve => {
         dockerCompose.on('close', code => {
-          if (code === 0) {
-            resolve(code);
-          } else {
-            const errorMsg = errorOutput || output;
-            const match = errorMsg.match(/ERROR:(.+?)(?:\n|$)/i);
-            const shortError = match
-              ? match[1].trim()
-              : `Docker Compose exited with code ${code}`;
-            const serviceMatch = errorMsg.match(/\[([^\]]+)\s+\d+\/\d+\]/);
-            const failedService = serviceMatch ? serviceMatch[1] : 'unknown';
-            reject(
-              new Error(
-                `Service '${failedService}' failed to build: ${shortError}\n\nTip: Java services may need Maven wrapper fixes.\n\nFull output:\n${errorMsg.substring(
-                  0,
-                  1000,
-                )}`,
-              ),
-            );
-          }
+          fullDeploySucceeded = code === 0;
+          resolve();
         });
+        dockerCompose.on('error', () => resolve());
       });
+
+      // ── Per-service recovery if full deploy failed ─────────────────────────
+      if (!fullDeploySucceeded) {
+        logger.warn(
+          'Full docker compose up failed — attempting per-service recovery...',
+        );
+        const { succeeded, failed } = await buildServicesWithRecovery(
+          microservicesDir,
+          composeFile,
+          logger,
+        );
+        if (succeeded.length === 0) {
+          const errorMsg = errorOutput || output;
+          const match = errorMsg.match(/ERROR:(.+?)(?:\n|$)/i);
+          const shortError = match
+            ? match[1].trim()
+            : `All services failed to build`;
+          throw new Error(
+            `All services failed to build: ${shortError}\n\nCheck Dockerfiles and build logs.\n\nFull output:\n${errorMsg.substring(
+              0,
+              1000,
+            )}`,
+          );
+        }
+        logger.info(
+          `Recovery: ${succeeded.length} services up, ${
+            failed.length
+          } failed (${failed.join(', ')})`,
+        );
+      }
 
       logger.info('Waiting for services to stabilize...');
       await new Promise(resolve => setTimeout(resolve, 5000));
@@ -691,10 +995,17 @@ export async function createRouter(
       // After successfully deploying, update app-config.yaml to include the catalog-info
       // We do this here instead of during generation so the UI has time to redirect to Trace Viewer before the auto-restart!
       try {
-        const configPath = path.join(process.cwd(), '..', '..', 'app-config.yaml');
+        const configPath = path.join(
+          process.cwd(),
+          '..',
+          '..',
+          'app-config.yaml',
+        );
         if (await fs.pathExists(configPath)) {
           let appConfig = await fs.readFile(configPath, 'utf-8');
-          const relPath = path.relative(path.join(process.cwd(), '..', '..'), microservicesDir).replace(/\\/g, '/');
+          const relPath = path
+            .relative(path.join(process.cwd(), '..', '..'), microservicesDir)
+            .replace(/\\/g, '/');
           const catalogEntry = `    - type: file\n      target: ../../${relPath}/catalog-info.yaml\n      rules:\n        - allow: [System, Component, API, Resource]`;
 
           if (!appConfig.includes(`${relPath}`)) {
@@ -704,7 +1015,9 @@ export async function createRouter(
             );
             // Write it in the background to give the HTTP response time to finish and the frontend to navigate
             setTimeout(() => {
-              fs.writeFile(configPath, appConfig).catch(e => logger.error(`Failed to update app-config: ${e}`));
+              fs.writeFile(configPath, appConfig).catch(e =>
+                logger.error(`Failed to update app-config: ${e}`),
+              );
             }, 1000);
           }
         }
@@ -738,7 +1051,8 @@ export async function createRouter(
 
     try {
       logger.info(
-        `🚀 Auto-deploying service: ${serviceName} (Jaeger: ${jaegerServiceName || serviceName
+        `🚀 Auto-deploying service: ${serviceName} (Jaeger: ${
+          jaegerServiceName || serviceName
         })`,
       );
 
@@ -748,6 +1062,16 @@ export async function createRouter(
         return res.status(404).json({
           success: false,
           error: `Repository "${repoName}" not found. Please configure the microservice first.`,
+        });
+      }
+
+      // ── Pre-flight: Docker daemon check ────────────────────────────────────
+      if (!(await isDockerAvailable())) {
+        return res.status(503).json({
+          success: false,
+          error:
+            'Docker daemon is not running. Please start Docker Desktop or the Docker service and try again.',
+          errorType: 'docker_unavailable',
         });
       }
 
@@ -762,16 +1086,17 @@ export async function createRouter(
       const composeFile = 'docker-compose.otel.yml';
 
       {
-        const rootComposePath = path.join(
-          microservicesDir,
-          'docker-compose.yml',
-        );
-        if (await fs.pathExists(rootComposePath)) {
-          // Prefer the repo's own docker-compose.yml — it has correct ports, volumes,
+        // Support docker-compose.yml, docker-compose.yaml, and compose in docker/ subdir
+        const rootComposePath = await findRootComposeFile(microservicesDir);
+        if (rootComposePath) {
+          // Prefer the repo's own docker-compose — it has correct ports, volumes,
           // environment variables, and service dependencies already configured.
           // We inject Jaeger + OTEL on top of it.
           logger.info(
-            '📝 Found root docker-compose.yml — injecting OTEL into existing compose...',
+            `📝 Found compose at ${path.relative(
+              microservicesDir,
+              rootComposePath,
+            )} — injecting OTEL...`,
           );
           const composeContent = await fs.readFile(rootComposePath, 'utf-8');
           await fs.writeFile(
@@ -784,7 +1109,7 @@ export async function createRouter(
         } else {
           // No root compose — discover services and generate one from scratch
           logger.info(
-            '📝 No root docker-compose.yml found — generating from service discovery...',
+            '📝 No root docker-compose file found — generating from service discovery...',
           );
           const services = await detectServices(microservicesDir, config);
           if (services.length === 0) {
@@ -800,6 +1125,16 @@ export async function createRouter(
             `✅ Generated docker-compose.otel.yml with ${services.length} services + Jaeger`,
           );
         }
+      }
+
+      // ── Port conflict pre-check ────────────────────────────────────────────
+      const portConflicts = await detectPortConflicts(composeFilePath, logger);
+      if (portConflicts.length > 0) {
+        logger.warn(
+          `⚠️ Port conflicts for: ${portConflicts.join(
+            ', ',
+          )} — proceeding (services may fail to bind)`,
+        );
       }
 
       logger.info(`📦 Starting containers from ${composeFile}...`);
@@ -824,11 +1159,9 @@ export async function createRouter(
           );
           await new Promise<void>(resolve => {
             // `docker rm -f` silently ignores containers that don't exist
-            const rm = spawn(
-              'docker',
-              ['rm', '-f', ...namedContainers],
-              { shell: true },
-            );
+            const rm = spawn('docker', ['rm', '-f', ...namedContainers], {
+              shell: true,
+            });
             rm.stderr?.on('data', (d: Buffer) => {
               const line = d.toString().trim();
               // Only log real errors, not "no such container" noise
@@ -860,7 +1193,7 @@ export async function createRouter(
               [
                 '-c',
                 `wget -qO '${OTEL_AGENT_HOST_PATH}' '${JAVA_AGENT_DOWNLOAD}' 2>/dev/null || ` +
-                `curl -sLo '${OTEL_AGENT_HOST_PATH}' '${JAVA_AGENT_DOWNLOAD}'`,
+                  `curl -sLo '${OTEL_AGENT_HOST_PATH}' '${JAVA_AGENT_DOWNLOAD}'`,
               ],
               { shell: false },
             );
@@ -883,7 +1216,9 @@ export async function createRouter(
           );
         }
       } catch {
-        logger.warn('⚠️ Could not ensure OTel agent — Java tracing may not work');
+        logger.warn(
+          '⚠️ Could not ensure OTel agent — Java tracing may not work',
+        );
       }
 
       const dockerDeploy = spawn(
@@ -902,24 +1237,89 @@ export async function createRouter(
 
       let deployOutput = '';
       let deployError = '';
+      let deploySucceeded = false;
 
       dockerDeploy.stdout?.on('data', data => {
         deployOutput += data.toString();
         logger.info(data.toString());
       });
       dockerDeploy.stderr?.on('data', data => {
-        deployError += data.toString();
+        const txt = data.toString();
+        deployError += txt;
+        if (
+          txt.toLowerCase().includes('error') ||
+          txt.toLowerCase().includes('failed')
+        ) {
+          logger.warn(`[deploy] ${txt.trim()}`);
+        }
       });
 
-      await new Promise((resolve, reject) => {
+      await new Promise<void>(resolve => {
         dockerDeploy.on('close', code => {
-          if (code === 0) resolve(code);
-          else
-            reject(
-              new Error(`Deployment failed with code ${code}\n${deployError}`),
-            );
+          deploySucceeded = code === 0;
+          resolve();
         });
+        dockerDeploy.on('error', () => resolve());
       });
+
+      // ── Per-service recovery when full deploy fails ────────────────────────
+      if (!deploySucceeded) {
+        logger.warn(
+          '⚠️ Full docker compose up failed — attempting per-service recovery...',
+        );
+        const { succeeded: recoveredSvcs, failed: failedSvcs } =
+          await buildServicesWithRecovery(
+            microservicesDir,
+            composeFile,
+            logger,
+          );
+
+        if (recoveredSvcs.length === 0) {
+          // Categorise the error for better frontend messages
+          const errLower = (deployError + deployOutput).toLowerCase();
+          let errorType = 'build_failed';
+          let errorHint =
+            'Check Dockerfiles and build context for each service.';
+          if (
+            errLower.includes('network') ||
+            errLower.includes('connection refused') ||
+            errLower.includes('name or service not known')
+          ) {
+            errorType = 'network_error';
+            errorHint =
+              'A network error occurred. Check your internet connection and Docker network settings.';
+          } else if (
+            errLower.includes('port') ||
+            errLower.includes('address already in use')
+          ) {
+            errorType = 'port_conflict';
+            errorHint = `A port is already in use. Conflicting services: ${
+              portConflicts.join(', ') || 'unknown'
+            }. Stop other services using those ports.`;
+          } else if (
+            errLower.includes('no space left') ||
+            errLower.includes('disk')
+          ) {
+            errorType = 'disk_full';
+            errorHint =
+              'Disk space is low. Run "docker system prune" to free space.';
+          }
+          throw Object.assign(
+            new Error(
+              `All services failed to start. ${errorHint}\n\nBuild output:\n${(
+                deployError + deployOutput
+              ).slice(-800)}`,
+            ),
+            { errorType },
+          );
+        }
+
+        logger.info(
+          `🔁 Recovery: ${recoveredSvcs.length} services up, ${
+            failedSvcs.length
+          } failed (${failedSvcs.join(', ')})`,
+        );
+      }
 
       logger.info('⏳ Waiting 5 seconds for containers to start...');
       await new Promise(resolve => setTimeout(resolve, 5000));
@@ -1008,10 +1408,13 @@ export async function createRouter(
       );
 
       const serviceUrl = `http://localhost:${servicePort}`;
-      const endpoints: { path: string, method: string }[] =
+      const endpoints: { path: string; method: string }[] =
         Array.isArray(testEndpoints) && testEndpoints.length > 0
           ? testEndpoints.map(e => ({ path: e, method: 'GET' }))
-          : [{ path: '/', method: 'GET' }, { path: '/health', method: 'GET' }];
+          : [
+              { path: '/', method: 'GET' },
+              { path: '/health', method: 'GET' },
+            ];
 
       if (!testEndpoints || testEndpoints.length === 0) {
         try {
@@ -1033,7 +1436,11 @@ export async function createRouter(
                 let endpointPath = match[2];
                 // basic replacement to ensure the endpoint does not throw 404
                 endpointPath = endpointPath.split('?')[0].replace(/:\w+/g, '1');
-                if (!endpoints.find(e => e.path === endpointPath && e.method === method)) {
+                if (
+                  !endpoints.find(
+                    e => e.path === endpointPath && e.method === method,
+                  )
+                ) {
                   endpoints.push({ path: endpointPath, method });
                 }
               }
@@ -1047,7 +1454,9 @@ export async function createRouter(
       }
 
       logger.info(
-        `Discovered endpoints to trace for ${actualServiceName}: ${endpoints.map(e => `${e.method} ${e.path}`).join(', ')}`,
+        `Discovered endpoints to trace for ${actualServiceName}: ${endpoints
+          .map(e => `${e.method} ${e.path}`)
+          .join(', ')}`,
       );
 
       // Wait for the service to be reachable (npm install + OTEL setup can take 60-180s)
@@ -1057,7 +1466,8 @@ export async function createRouter(
         const readinessStart = Date.now();
         let serviceReady = false;
         logger.info(
-          `⏳ Waiting for ${serviceName} to become ready on port ${servicePort} (up to ${readinessMaxMs / 1000
+          `⏳ Waiting for ${serviceName} to become ready on port ${servicePort} (up to ${
+            readinessMaxMs / 1000
           }s)...`,
         );
         while (Date.now() - readinessStart < readinessMaxMs) {
@@ -1079,7 +1489,8 @@ export async function createRouter(
         }
         if (!serviceReady) {
           logger.warn(
-            `⚠️ ${serviceName} did not respond within ${readinessMaxMs / 1000
+            `⚠️ ${serviceName} did not respond within ${
+              readinessMaxMs / 1000
             }s — generating traces anyway`,
           );
         }
@@ -1094,7 +1505,9 @@ export async function createRouter(
         composeFile,
       );
 
-      logger.info(`✅ Generated ${successCount} successful requests for ${serviceName}`);
+      logger.info(
+        `✅ Generated ${successCount} successful requests for ${serviceName}`,
+      );
       logger.info('⏳ Waiting for traces to propagate to Jaeger...');
       await new Promise(resolve => setTimeout(resolve, 8000));
 
@@ -1107,10 +1520,11 @@ export async function createRouter(
         if (otelEnv) targetServiceName = otelEnv.split('=')[1];
       }
 
-      const jaegerTracesUrl = `${config.jaegerBaseUrl
-        }/traces?service=${encodeURIComponent(
-          targetServiceName,
-        )}&lookback=5m&limit=100`;
+      const jaegerTracesUrl = `${
+        config.jaegerBaseUrl
+      }/traces?service=${encodeURIComponent(
+        targetServiceName,
+      )}&lookback=5m&limit=100`;
       let tracesFound = 0;
       try {
         const jaegerResponse = await fetch(jaegerTracesUrl);
@@ -1139,591 +1553,621 @@ export async function createRouter(
       });
     } catch (error) {
       logger.error(`Failed to deploy and trace: ${error}`);
+      const errObj = error as any;
       return res.status(500).json({
         success: false,
         error: error instanceof Error ? error.message : String(error),
+        errorType: errObj?.errorType ?? 'unknown',
       });
     }
   });
 
-// POST /service/start-jaeger - Start Jaeger container for a given repo
-router.post('/service/start-jaeger', async (req, res) => {
-  const { repoName } = req.body || {};
+  // POST /service/start-jaeger - Start Jaeger container for a given repo
+  router.post('/service/start-jaeger', async (req, res) => {
+    const { repoName } = req.body || {};
 
-  try {
-    const repo = repoName || '';
-    logger.info(`📊 Starting Jaeger for repo: ${repo || 'default'}`);
+    try {
+      const repo = repoName || '';
+      logger.info(`📊 Starting Jaeger for repo: ${repo || 'default'}`);
 
-    let microservicesDir = '';
-    if (repo) {
-      microservicesDir = config.repoPath(repo);
-      if (!(await fs.pathExists(microservicesDir))) {
-        logger.warn(`⚠️ Repo directory not found: ${microservicesDir}`);
+      let microservicesDir = '';
+      if (repo) {
+        microservicesDir = config.repoPath(repo);
+        if (!(await fs.pathExists(microservicesDir))) {
+          logger.warn(`⚠️ Repo directory not found: ${microservicesDir}`);
+          return res.status(404).json({
+            success: false,
+            error: `Repository "${repo}" not found at ${microservicesDir}`,
+          });
+        }
+      } else {
+        const microservicesBase = config.workspaceRoot;
+        if (await fs.pathExists(microservicesBase)) {
+          const dirs = await fs.readdir(microservicesBase);
+          for (const dir of dirs) {
+            const composePath = path.join(
+              microservicesBase,
+              dir,
+              'docker-compose.otel.yml',
+            );
+            if (await fs.pathExists(composePath)) {
+              microservicesDir = path.join(microservicesBase, dir);
+              logger.info(`📂 Found docker-compose in: ${microservicesDir}`);
+              break;
+            }
+          }
+        }
+      }
+
+      if (!microservicesDir) {
+        logger.error(
+          '❌ docker-compose.otel.yml not found in any microservices directory',
+        );
         return res.status(404).json({
           success: false,
-          error: `Repository "${repo}" not found at ${microservicesDir}`,
+          error:
+            'docker-compose.otel.yml not found - please run configuration first',
         });
       }
-    } else {
-      const microservicesBase = config.workspaceRoot;
-      if (await fs.pathExists(microservicesBase)) {
-        const dirs = await fs.readdir(microservicesBase);
-        for (const dir of dirs) {
-          const composePath = path.join(
-            microservicesBase,
-            dir,
-            'docker-compose.otel.yml',
-          );
-          if (await fs.pathExists(composePath)) {
-            microservicesDir = path.join(microservicesBase, dir);
-            logger.info(`📂 Found docker-compose in: ${microservicesDir}`);
+
+      const composeFile = 'docker-compose.otel.yml';
+      const composePath = path.join(microservicesDir, composeFile);
+      if (!(await fs.pathExists(composePath))) {
+        return res.status(404).json({
+          success: false,
+          error: `${composeFile} not found - please generate configuration files first`,
+        });
+      }
+
+      logger.info(
+        `🚀 Starting Jaeger via docker-compose in ${microservicesDir}`,
+      );
+
+      // Remove any lingering /jaeger container so docker compose can create it fresh
+      await new Promise<void>(resolve => {
+        const rm = spawn('docker', ['rm', '-f', 'jaeger'], { shell: true });
+        rm.on('close', () => resolve());
+      });
+
+      const dockerUp = spawn(
+        'docker compose',
+        ['-f', composeFile, 'up', '-d', 'jaeger'],
+        { cwd: microservicesDir, shell: true, timeout: 120000 },
+      );
+
+      let out = '';
+      let err = '';
+      dockerUp.stdout?.on('data', d => {
+        out += d.toString();
+        logger.info(`[docker-compose stdout] ${d.toString()}`);
+      });
+      dockerUp.stderr?.on('data', d => {
+        err += d.toString();
+        logger.warn(`[docker-compose stderr] ${d.toString()}`);
+      });
+
+      await new Promise((resolve, reject) => {
+        dockerUp.on('close', code => {
+          if (code === 0) {
+            logger.info('✅ docker-compose command completed successfully');
+            resolve(null);
+          } else {
+            logger.error(`❌ docker-compose exit code: ${code}`);
+            reject(new Error(`docker-compose exit ${code}: ${err}`));
+          }
+        });
+      });
+
+      logger.info('⏳ Waiting for Jaeger to initialize (15 seconds)...');
+      await new Promise(r => setTimeout(r, 15000));
+
+      const jaegerHealthUrl = `${config.jaegerBaseUrl}/services`;
+      logger.info(`🔍 Checking Jaeger health at ${jaegerHealthUrl}`);
+      let jaegerHealthy = false;
+      let healthCheckAttempts = 0;
+      const maxAttempts = 5;
+
+      while (healthCheckAttempts < maxAttempts && !jaegerHealthy) {
+        try {
+          const healthResponse = await fetch(jaegerHealthUrl, {
+            timeout: 5000,
+          } as any);
+          if (healthResponse.ok) {
+            logger.info('✅ Jaeger is healthy and responding');
+            jaegerHealthy = true;
             break;
           }
+        } catch (healthErr) {
+          healthCheckAttempts++;
+          logger.warn(
+            `⚠️ Health check attempt ${healthCheckAttempts}/${maxAttempts} failed: ${healthErr}`,
+          );
+          if (healthCheckAttempts < maxAttempts)
+            await new Promise(r => setTimeout(r, 2000));
         }
       }
-    }
 
-    if (!microservicesDir) {
-      logger.error(
-        '❌ docker-compose.otel.yml not found in any microservices directory',
-      );
-      return res.status(404).json({
-        success: false,
-        error:
-          'docker-compose.otel.yml not found - please run configuration first',
-      });
-    }
-
-    const composeFile = 'docker-compose.otel.yml';
-    const composePath = path.join(microservicesDir, composeFile);
-    if (!(await fs.pathExists(composePath))) {
-      return res.status(404).json({
-        success: false,
-        error: `${composeFile} not found - please generate configuration files first`,
-      });
-    }
-
-    logger.info(
-      `🚀 Starting Jaeger via docker-compose in ${microservicesDir}`,
-    );
-
-    // Remove any lingering /jaeger container so docker compose can create it fresh
-    await new Promise<void>(resolve => {
-      const rm = spawn('docker', ['rm', '-f', 'jaeger'], { shell: true });
-      rm.on('close', () => resolve());
-    });
-
-    const dockerUp = spawn(
-      'docker compose',
-      ['-f', composeFile, 'up', '-d', 'jaeger'],
-      { cwd: microservicesDir, shell: true, timeout: 120000 },
-    );
-
-    let out = '';
-    let err = '';
-    dockerUp.stdout?.on('data', d => {
-      out += d.toString();
-      logger.info(`[docker-compose stdout] ${d.toString()}`);
-    });
-    dockerUp.stderr?.on('data', d => {
-      err += d.toString();
-      logger.warn(`[docker-compose stderr] ${d.toString()}`);
-    });
-
-    await new Promise((resolve, reject) => {
-      dockerUp.on('close', code => {
-        if (code === 0) {
-          logger.info('✅ docker-compose command completed successfully');
-          resolve(null);
-        } else {
-          logger.error(`❌ docker-compose exit code: ${code}`);
-          reject(new Error(`docker-compose exit ${code}: ${err}`));
-        }
-      });
-    });
-
-    logger.info('⏳ Waiting for Jaeger to initialize (15 seconds)...');
-    await new Promise(r => setTimeout(r, 15000));
-
-    const jaegerHealthUrl = `${config.jaegerBaseUrl}/services`;
-    logger.info(`🔍 Checking Jaeger health at ${jaegerHealthUrl}`);
-    let jaegerHealthy = false;
-    let healthCheckAttempts = 0;
-    const maxAttempts = 5;
-
-    while (healthCheckAttempts < maxAttempts && !jaegerHealthy) {
-      try {
-        const healthResponse = await fetch(jaegerHealthUrl, {
-          timeout: 5000,
-        } as any);
-        if (healthResponse.ok) {
-          logger.info('✅ Jaeger is healthy and responding');
-          jaegerHealthy = true;
-          break;
-        }
-      } catch (healthErr) {
-        healthCheckAttempts++;
+      if (!jaegerHealthy) {
         logger.warn(
-          `⚠️ Health check attempt ${healthCheckAttempts}/${maxAttempts} failed: ${healthErr}`,
+          '⚠️ Jaeger health check failed, but continuing (may be initializing)',
         );
-        if (healthCheckAttempts < maxAttempts)
-          await new Promise(r => setTimeout(r, 2000));
-      }
-    }
-
-    if (!jaegerHealthy) {
-      logger.warn(
-        '⚠️ Jaeger health check failed, but continuing (may be initializing)',
-      );
-    }
-
-    logger.info('✅ Jaeger startup process completed');
-    return res.json({
-      success: true,
-      jaegerRunning: jaegerHealthy,
-      message: jaegerHealthy
-        ? 'Jaeger started and healthy'
-        : 'Jaeger started (still initializing)',
-    });
-  } catch (e) {
-    logger.error(`❌ Failed to start Jaeger: ${e}`);
-    return res.status(500).json({
-      success: false,
-      error: e instanceof Error ? e.message : String(e),
-    });
-  }
-});
-
-// POST /service/deploy-all-and-trace - Auto-detect all services in repo and deploy+trace
-router.post('/service/deploy-all-and-trace', async (req, res) => {
-  const { repoName, gitHubUrl } = req.body || {};
-
-  if (!repoName) {
-    return res
-      .status(400)
-      .json({ success: false, error: 'repoName is required' });
-  }
-
-  try {
-    const microservicesDir = config.repoPath(repoName);
-
-    if (!(await fs.pathExists(microservicesDir))) {
-      if (!gitHubUrl) {
-        return res.status(404).json({
-          success: false,
-          error: `Repository "${repoName}" not found. Please provide gitHubUrl for auto-cloning.`,
-        });
       }
 
-      logger.info(
-        `📥 Auto-cloning repository from ${gitHubUrl} to ${microservicesDir}`,
-      );
-      await fs.ensureDir(path.dirname(microservicesDir));
-
-      try {
-        const git = simpleGit();
-        await git.clone(gitHubUrl, microservicesDir);
-        logger.info(
-          `✅ Repository cloned successfully to ${microservicesDir}`,
-        );
-      } catch (cloneErr) {
-        return res.status(500).json({
-          success: false,
-          error: `Failed to clone repository: ${cloneErr instanceof Error ? cloneErr.message : String(cloneErr)
-            }`,
-        });
-      }
-    }
-
-    logger.info(`🚀 Deploying all services from repo: ${repoName}`);
-
-    const services = await detectServices(microservicesDir, config);
-    const rootComposePath = path.join(microservicesDir, 'docker-compose.yml');
-    const hasRootCompose = await fs.pathExists(rootComposePath);
-
-    if (!hasRootCompose && services.length === 0) {
-      return res.status(400).json({
-        success: false,
-        error: 'No services detected and no docker-compose.yml found in repository',
+      logger.info('✅ Jaeger startup process completed');
+      return res.json({
+        success: true,
+        jaegerRunning: jaegerHealthy,
+        message: jaegerHealthy
+          ? 'Jaeger started and healthy'
+          : 'Jaeger started (still initializing)',
       });
-    }
-
-    if (services.length > 0) {
-      logger.info(
-        `✅ Detected ${services.length} services: ${services
-          .map(s => s.name)
-          .join(', ')}`,
-      );
-    }
-
-    logger.info('🔧 Fixing Dockerfiles...');
-    await fixDockerfiles(microservicesDir, logger);
-
-    const composeFilePath = path.join(
-      microservicesDir,
-      'docker-compose.otel.yml',
-    );
-    logger.info('📝 Generating docker-compose.otel.yml...');
-    if (hasRootCompose) {
-      // Prefer root docker-compose.yml — it has correct ports, env vars, and inter-service URLs.
-      // injectOtelIntoComposeContent adds Jaeger (if absent) and OTEL env vars without overriding
-      // anything the repo already configured correctly.
-      logger.info('📝 Using root docker-compose.yml with OTEL injection...');
-      const rootContent = await fs.readFile(rootComposePath, 'utf-8');
-      await fs.writeFile(composeFilePath, injectOtelIntoComposeContent(rootContent));
-    } else {
-      await fs.writeFile(composeFilePath, generateDockerCompose(services));
-    }
-
-    logger.info('📦 Starting all containers...');
-    const dockerUp = spawn(
-      'docker compose',
-      [
-        '-f',
-        'docker-compose.otel.yml',
-        'up',
-        '-d',
-        '--build',
-        '--remove-orphans',
-        '--no-log-prefix',
-      ],
-      { cwd: microservicesDir, shell: true, timeout: 300000 },
-    );
-
-    let deployErr = '';
-    dockerUp.stderr?.on('data', d => {
-      deployErr += d.toString();
-    });
-    dockerUp.stdout?.on('data', d => {
-      logger.info(d.toString());
-    });
-
-    await new Promise((resolve, reject) => {
-      dockerUp.on('close', code => {
-        if (code === 0) resolve(null);
-        else reject(new Error(`docker-compose exit ${code}: ${deployErr}`));
-      });
-    });
-
-    logger.info('⏳ Waiting for services to initialize...');
-    await new Promise(r => setTimeout(r, 15000));
-
-    const ps = spawn(
-      'docker compose',
-      [
-        '-f',
-        'docker-compose.otel.yml',
-        'ps',
-        '--services',
-        '--filter',
-        'status=running',
-      ],
-      { cwd: microservicesDir, shell: true },
-    );
-
-    let psOut = '';
-    ps.stdout?.on('data', d => {
-      psOut += d.toString();
-    });
-    await new Promise(r => {
-      ps.on('close', () => r(null));
-    });
-
-    const runningList = psOut.split('\n').filter(s => s.trim());
-    logger.info(`✅ Running: ${runningList.join(', ')}`);
-
-    // ── Generate traffic for all deployed (non-jaeger) services ────────────
-    // Read the compose file to get host ports for each service.
-    const serviceUrls: string[] = [];
-    try {
-      const composeContent = await fs.readFile(
-        path.join(microservicesDir, 'docker-compose.otel.yml'),
-        'utf-8',
-      );
-      const composeData = yaml.parse(composeContent);
-      for (const [svcName, svcRaw] of Object.entries(composeData.services || {})) {
-        const svc = svcRaw as any;
-        if (svcName === 'jaeger' || svc.image?.includes('jaeger')) continue;
-        if (Array.isArray(svc.ports) && svc.ports.length > 0) {
-          const hostPort = String(svc.ports[0]).split(':')[0];
-          serviceUrls.push(`http://localhost:${hostPort}`);
-        }
-      }
     } catch (e) {
-      logger.warn(`Could not parse compose file for service URLs: ${e}`);
-    }
-
-    logger.info(`🚦 Generating traffic for ${serviceUrls.length} service(s)...`);
-    const totalTraffic = await generateTrafficForRepo(
-      microservicesDir,
-      serviceUrls,
-      logger,
-      'docker-compose.otel.yml',
-    );
-    logger.info(`✅ Traffic generation complete: ${totalTraffic} successful requests`);
-    logger.info('⏳ Waiting for traces to propagate to Jaeger...');
-    await new Promise(r => setTimeout(r, 8000));
-
-    // Resolve jaegerServiceNames from OTEL_SERVICE_NAME env vars in compose
-    const servicesToTrace: Array<{ serviceName: string; jaegerServiceName: string }> = [];
-    try {
-      const composeContent = await fs.readFile(
-        path.join(microservicesDir, 'docker-compose.otel.yml'),
-        'utf-8',
-      );
-      const composeData = yaml.parse(composeContent);
-      for (const [svcName, svcRaw] of Object.entries(composeData.services || {})) {
-        const svc = svcRaw as any;
-        if (svcName === 'jaeger' || svc.image?.includes('jaeger')) continue;
-        let jaegerName = svcName;
-        const envList: string[] = Array.isArray(svc.environment) ? svc.environment : [];
-        const otelEnv = envList.find(
-          (e: string) => typeof e === 'string' && e.startsWith('OTEL_SERVICE_NAME='),
-        );
-        if (otelEnv) jaegerName = otelEnv.split('=').slice(1).join('=');
-        servicesToTrace.push({ serviceName: svcName, jaegerServiceName: jaegerName });
-      }
-    } catch {
-      // fallback to discovered services list
-      services.filter(s => s.name !== 'jaeger').forEach(s =>
-        servicesToTrace.push({ serviceName: s.name, jaegerServiceName: s.name }),
-      );
-    }
-
-    return res.json({
-      success: true,
-      repoName,
-      servicesDetected: services.length,
-      servicesRunning: runningList.length,
-      services: services.map(s => s.name),
-      servicesToTrace,
-      jaegerRunning: runningList.includes('jaeger'),
-      tracesGenerated: totalTraffic,
-      message: `✅ Deployed ${runningList.length} containers, generated ${totalTraffic} traffic requests`,
-    });
-  } catch (e) {
-    logger.error(`Failed to deploy all services: ${e}`);
-    return res.status(500).json({
-      success: false,
-      error: e instanceof Error ? e.message : String(e),
-    });
-  }
-});
-
-// POST /service/start-and-trace - Start service and generate traces
-router.post('/service/start-and-trace', async (req, res) => {
-  const { serviceName, repoName } = req.body;
-
-  try {
-    logger.info(`Starting service ${serviceName} and generating traces`);
-
-    const microservicesDir = config.repoPath(repoName);
-
-    const composeFile = (await fs.pathExists(
-      path.join(microservicesDir, 'docker-compose.yml'),
-    ))
-      ? 'docker-compose.yml'
-      : 'docker-compose.otel.yml';
-
-    if (!(await fs.pathExists(path.join(microservicesDir, composeFile)))) {
-      throw new Error(`No docker-compose file found in ${microservicesDir}`);
-    }
-
-    logger.info('Starting services with docker-compose...');
-    const dockerUp = spawn(
-      'docker compose',
-      ['-f', composeFile, 'up', '-d'],
-      {
-        cwd: microservicesDir,
-        shell: true,
-      },
-    );
-
-    let upOutput = '';
-    dockerUp.stdout?.on('data', data => {
-      upOutput += data.toString();
-      logger.info(data.toString());
-    });
-    dockerUp.stderr?.on('data', data => {
-      upOutput += data.toString();
-    });
-
-    await new Promise((resolve, reject) => {
-      dockerUp.on('close', code => {
-        if (code === 0) resolve(code);
-        else
-          reject(
-            new Error(
-              `Docker Compose up failed with code ${code}\n${upOutput}`,
-            ),
-          );
+      logger.error(`❌ Failed to start Jaeger: ${e}`);
+      return res.status(500).json({
+        success: false,
+        error: e instanceof Error ? e.message : String(e),
       });
-    });
+    }
+  });
 
-    logger.info('Waiting for services to initialize...');
-    await new Promise(resolve => setTimeout(resolve, 10000));
+  // POST /service/deploy-all-and-trace - Auto-detect all services in repo and deploy+trace
+  router.post('/service/deploy-all-and-trace', async (req, res) => {
+    const { repoName, gitHubUrl } = req.body || {};
 
-    const dockerPs = spawn(
-      'docker compose',
-      ['-f', composeFile, 'ps', '--format', 'json'],
-      {
-        cwd: microservicesDir,
-        shell: true,
-      },
-    );
-
-    let psOutput = '';
-    dockerPs.stdout?.on('data', data => {
-      psOutput += data.toString();
-    });
-    await new Promise(resolve => {
-      dockerPs.on('close', () => resolve(null));
-    });
-
-    const runningServices = psOutput
-      .split('\n')
-      .filter(line => line.trim())
-      .map(line => {
-        try {
-          return JSON.parse(line);
-        } catch {
-          return null;
-        }
-      })
-      .filter(Boolean);
-
-    logger.info(`Found ${runningServices.length} running services`);
-
-    logger.info(`Generating traces for ${serviceName}...`);
-    const traceCount = 250;
-    const traces = [];
-
-    const serviceInfo = runningServices.find(
-      (s: any) =>
-        s.Service?.toLowerCase().includes(serviceName.toLowerCase()) ||
-        s.Name?.toLowerCase().includes(serviceName.toLowerCase()),
-    );
-
-    if (serviceInfo?.Publishers) {
-      const portMatch = serviceInfo.Publishers[0]?.URL?.match(/:(\d+)$/);
-      const port = portMatch ? portMatch[1] : '5000';
-
-      logger.info(
-        `Making ${traceCount} requests to http://localhost:${port}/api/quote`,
-      );
-
-      for (let i = 0; i < traceCount; i++) {
-        try {
-          const response = await fetch(`http://localhost:${port}/api/quote`);
-          const data = await response.json();
-          traces.push({
-            request: i + 1,
-            status: response.status,
-            quote: (data as any).quote?.substring(0, 50),
-          });
-          await new Promise(resolve => setTimeout(resolve, 50));
-        } catch (err) {
-          logger.warn(`Request ${i + 1} failed: ${err}`);
-        }
-      }
-    } else {
-      logger.warn(
-        `Could not find port for ${serviceName}, skipping trace generation`,
-      );
+    if (!repoName) {
+      return res
+        .status(400)
+        .json({ success: false, error: 'repoName is required' });
     }
 
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    try {
+      const microservicesDir = config.repoPath(repoName);
 
-    logger.info(`Fetching traces from Jaeger for ${serviceName}...`);
-    const jaegerTracesUrl = `${config.jaegerBaseUrl}/traces?service=${serviceName}&lookback=5m&limit=100`;
-    const jaegerResponse = await fetch(jaegerTracesUrl);
-    const jaegerData = await jaegerResponse.json();
-    const traceList = (jaegerData as any).data || [];
+      if (!(await fs.pathExists(microservicesDir))) {
+        if (!gitHubUrl) {
+          return res.status(404).json({
+            success: false,
+            error: `Repository "${repoName}" not found. Please provide gitHubUrl for auto-cloning.`,
+          });
+        }
 
-    logger.info(
-      `✅ Service started and ${traceList.length} traces generated`,
-    );
-
-    if (traceList.length > 0) {
-      console.log(`\n📊 === TRACES FOR ${serviceName.toUpperCase()} ===`);
-      traceList.slice(0, 10).forEach((trace: any, idx: number) => {
-        console.log(`\n[Trace ${idx + 1}] ID: ${trace.traceID}`);
-        console.log(
-          `  Duration: ${trace.duration}µs | Spans: ${trace.spans?.length || 0
-          }`,
+        logger.info(
+          `📥 Auto-cloning repository from ${gitHubUrl} to ${microservicesDir}`,
         );
-        trace.spans?.forEach((span: any) => {
-          console.log(
-            `    └─ [${span.operationName}] (${span.duration}µs) | Service: ${span.processID}`,
+        await fs.ensureDir(path.dirname(microservicesDir));
+
+        try {
+          const git = simpleGit();
+          await git.clone(gitHubUrl, microservicesDir);
+          logger.info(
+            `✅ Repository cloned successfully to ${microservicesDir}`,
           );
-          if (span.tags?.length) {
-            span.tags.slice(0, 5).forEach((tag: any) => {
-              if (tag.value && typeof tag.value === 'object') {
-                console.log(
-                  `       • ${tag.key}: ${JSON.stringify(tag.value).substring(
-                    0,
-                    60,
-                  )}`,
-                );
-              } else {
-                console.log(`       • ${tag.key}: ${tag.value}`);
-              }
-            });
-          }
+        } catch (cloneErr) {
+          return res.status(500).json({
+            success: false,
+            error: `Failed to clone repository: ${
+              cloneErr instanceof Error ? cloneErr.message : String(cloneErr)
+            }`,
+          });
+        }
+      }
+
+      logger.info(`🚀 Deploying all services from repo: ${repoName}`);
+
+      const services = await detectServices(microservicesDir, config);
+      const rootComposePath = path.join(microservicesDir, 'docker-compose.yml');
+      const hasRootCompose = await fs.pathExists(rootComposePath);
+
+      if (!hasRootCompose && services.length === 0) {
+        return res.status(400).json({
+          success: false,
+          error:
+            'No services detected and no docker-compose.yml found in repository',
+        });
+      }
+
+      if (services.length > 0) {
+        logger.info(
+          `✅ Detected ${services.length} services: ${services
+            .map(s => s.name)
+            .join(', ')}`,
+        );
+      }
+
+      logger.info('🔧 Fixing Dockerfiles...');
+      await fixDockerfiles(microservicesDir, logger);
+
+      const composeFilePath = path.join(
+        microservicesDir,
+        'docker-compose.otel.yml',
+      );
+      logger.info('📝 Generating docker-compose.otel.yml...');
+      if (hasRootCompose) {
+        // Prefer root docker-compose.yml — it has correct ports, env vars, and inter-service URLs.
+        // injectOtelIntoComposeContent adds Jaeger (if absent) and OTEL env vars without overriding
+        // anything the repo already configured correctly.
+        logger.info('📝 Using root docker-compose.yml with OTEL injection...');
+        const rootContent = await fs.readFile(rootComposePath, 'utf-8');
+        await fs.writeFile(
+          composeFilePath,
+          injectOtelIntoComposeContent(rootContent),
+        );
+      } else {
+        await fs.writeFile(composeFilePath, generateDockerCompose(services));
+      }
+
+      logger.info('📦 Starting all containers...');
+      const dockerUp = spawn(
+        'docker compose',
+        [
+          '-f',
+          'docker-compose.otel.yml',
+          'up',
+          '-d',
+          '--build',
+          '--remove-orphans',
+          '--no-log-prefix',
+        ],
+        { cwd: microservicesDir, shell: true, timeout: 300000 },
+      );
+
+      let deployErr = '';
+      dockerUp.stderr?.on('data', d => {
+        deployErr += d.toString();
+      });
+      dockerUp.stdout?.on('data', d => {
+        logger.info(d.toString());
+      });
+
+      await new Promise((resolve, reject) => {
+        dockerUp.on('close', code => {
+          if (code === 0) resolve(null);
+          else reject(new Error(`docker-compose exit ${code}: ${deployErr}`));
         });
       });
-      console.log('\n==============================\n');
+
+      logger.info('⏳ Waiting for services to initialize...');
+      await new Promise(r => setTimeout(r, 15000));
+
+      const ps = spawn(
+        'docker compose',
+        [
+          '-f',
+          'docker-compose.otel.yml',
+          'ps',
+          '--services',
+          '--filter',
+          'status=running',
+        ],
+        { cwd: microservicesDir, shell: true },
+      );
+
+      let psOut = '';
+      ps.stdout?.on('data', d => {
+        psOut += d.toString();
+      });
+      await new Promise(r => {
+        ps.on('close', () => r(null));
+      });
+
+      const runningList = psOut.split('\n').filter(s => s.trim());
+      logger.info(`✅ Running: ${runningList.join(', ')}`);
+
+      // ── Generate traffic for all deployed (non-jaeger) services ────────────
+      // Read the compose file to get host ports for each service.
+      const serviceUrls: string[] = [];
+      try {
+        const composeContent = await fs.readFile(
+          path.join(microservicesDir, 'docker-compose.otel.yml'),
+          'utf-8',
+        );
+        const composeData = yaml.parse(composeContent);
+        for (const [svcName, svcRaw] of Object.entries(
+          composeData.services || {},
+        )) {
+          const svc = svcRaw as any;
+          if (svcName === 'jaeger' || svc.image?.includes('jaeger')) continue;
+          if (Array.isArray(svc.ports) && svc.ports.length > 0) {
+            const hostPort = String(svc.ports[0]).split(':')[0];
+            serviceUrls.push(`http://localhost:${hostPort}`);
+          }
+        }
+      } catch (e) {
+        logger.warn(`Could not parse compose file for service URLs: ${e}`);
+      }
+
+      logger.info(
+        `🚦 Generating traffic for ${serviceUrls.length} service(s)...`,
+      );
+      const totalTraffic = await generateTrafficForRepo(
+        microservicesDir,
+        serviceUrls,
+        logger,
+        'docker-compose.otel.yml',
+      );
+      logger.info(
+        `✅ Traffic generation complete: ${totalTraffic} successful requests`,
+      );
+      logger.info('⏳ Waiting for traces to propagate to Jaeger...');
+      await new Promise(r => setTimeout(r, 8000));
+
+      // Resolve jaegerServiceNames from OTEL_SERVICE_NAME env vars in compose
+      const servicesToTrace: Array<{
+        serviceName: string;
+        jaegerServiceName: string;
+      }> = [];
+      try {
+        const composeContent = await fs.readFile(
+          path.join(microservicesDir, 'docker-compose.otel.yml'),
+          'utf-8',
+        );
+        const composeData = yaml.parse(composeContent);
+        for (const [svcName, svcRaw] of Object.entries(
+          composeData.services || {},
+        )) {
+          const svc = svcRaw as any;
+          if (svcName === 'jaeger' || svc.image?.includes('jaeger')) continue;
+          let jaegerName = svcName;
+          const envList: string[] = Array.isArray(svc.environment)
+            ? svc.environment
+            : [];
+          const otelEnv = envList.find(
+            (e: string) =>
+              typeof e === 'string' && e.startsWith('OTEL_SERVICE_NAME='),
+          );
+          if (otelEnv) jaegerName = otelEnv.split('=').slice(1).join('=');
+          servicesToTrace.push({
+            serviceName: svcName,
+            jaegerServiceName: jaegerName,
+          });
+        }
+      } catch {
+        // fallback to discovered services list
+        services
+          .filter(s => s.name !== 'jaeger')
+          .forEach(s =>
+            servicesToTrace.push({
+              serviceName: s.name,
+              jaegerServiceName: s.name,
+            }),
+          );
+      }
+
+      return res.json({
+        success: true,
+        repoName,
+        servicesDetected: services.length,
+        servicesRunning: runningList.length,
+        services: services.map(s => s.name),
+        servicesToTrace,
+        jaegerRunning: runningList.includes('jaeger'),
+        tracesGenerated: totalTraffic,
+        message: `✅ Deployed ${runningList.length} containers, generated ${totalTraffic} traffic requests`,
+      });
+    } catch (e) {
+      logger.error(`Failed to deploy all services: ${e}`);
+      return res.status(500).json({
+        success: false,
+        error: e instanceof Error ? e.message : String(e),
+      });
     }
-
-    return res.json({
-      success: true,
-      message: `Service ${serviceName} started and ${traceList.length} traces generated`,
-      serviceName,
-      tracesGenerated: traces.length,
-      tracesInJaeger: traceList.length,
-      traces: traceList.slice(0, 10).map((t: any) => ({
-        traceID: t.traceID,
-        spans: t.spans?.length || 0,
-        duration: t.spans?.[0]?.duration || 0,
-      })),
-      runningServices: runningServices.map((s: any) => ({
-        name: s.Service || s.Name,
-        status: s.State,
-      })),
-    });
-  } catch (error) {
-    logger.error(`Failed to start service and generate traces: ${error}`);
-    return res.status(500).json({
-      error: error instanceof Error ? error.message : String(error),
-      success: false,
-    });
-  }
-});
-
-// GET /fra/config - Expose current FRA configuration to the frontend
-router.get('/fra/config', (_req, res) => {
-  res.json({
-    tracing: {
-      backends: config.tracingBackends,
-      defaultLookbackHours: config.defaultLookbackHours,
-      maxTracesPerService: config.maxTracesPerService,
-    },
-    discovery: {
-      minConfidenceThreshold: config.minConfidenceThreshold,
-      maxScanDepth: config.maxScanDepth,
-    },
-    analysis: {
-      externalCallThreshold: config.externalCallThreshold,
-      confidenceMargin: config.confidenceMargin,
-    },
-    catalog: {
-      defaultOwner: config.catalogDefaultOwner,
-      defaultLifecycle: config.catalogDefaultLifecycle,
-    },
   });
-});
 
-return router;
+  // POST /service/start-and-trace - Start service and generate traces
+  router.post('/service/start-and-trace', async (req, res) => {
+    const { serviceName, repoName } = req.body;
+
+    try {
+      logger.info(`Starting service ${serviceName} and generating traces`);
+
+      const microservicesDir = config.repoPath(repoName);
+
+      const composeFile = (await fs.pathExists(
+        path.join(microservicesDir, 'docker-compose.yml'),
+      ))
+        ? 'docker-compose.yml'
+        : 'docker-compose.otel.yml';
+
+      if (!(await fs.pathExists(path.join(microservicesDir, composeFile)))) {
+        throw new Error(`No docker-compose file found in ${microservicesDir}`);
+      }
+
+      logger.info('Starting services with docker-compose...');
+      const dockerUp = spawn(
+        'docker compose',
+        ['-f', composeFile, 'up', '-d'],
+        {
+          cwd: microservicesDir,
+          shell: true,
+        },
+      );
+
+      let upOutput = '';
+      dockerUp.stdout?.on('data', data => {
+        upOutput += data.toString();
+        logger.info(data.toString());
+      });
+      dockerUp.stderr?.on('data', data => {
+        upOutput += data.toString();
+      });
+
+      await new Promise((resolve, reject) => {
+        dockerUp.on('close', code => {
+          if (code === 0) resolve(code);
+          else
+            reject(
+              new Error(
+                `Docker Compose up failed with code ${code}\n${upOutput}`,
+              ),
+            );
+        });
+      });
+
+      logger.info('Waiting for services to initialize...');
+      await new Promise(resolve => setTimeout(resolve, 10000));
+
+      const dockerPs = spawn(
+        'docker compose',
+        ['-f', composeFile, 'ps', '--format', 'json'],
+        {
+          cwd: microservicesDir,
+          shell: true,
+        },
+      );
+
+      let psOutput = '';
+      dockerPs.stdout?.on('data', data => {
+        psOutput += data.toString();
+      });
+      await new Promise(resolve => {
+        dockerPs.on('close', () => resolve(null));
+      });
+
+      const runningServices = psOutput
+        .split('\n')
+        .filter(line => line.trim())
+        .map(line => {
+          try {
+            return JSON.parse(line);
+          } catch {
+            return null;
+          }
+        })
+        .filter(Boolean);
+
+      logger.info(`Found ${runningServices.length} running services`);
+
+      logger.info(`Generating traces for ${serviceName}...`);
+      const traceCount = 250;
+      const traces = [];
+
+      const serviceInfo = runningServices.find(
+        (s: any) =>
+          s.Service?.toLowerCase().includes(serviceName.toLowerCase()) ||
+          s.Name?.toLowerCase().includes(serviceName.toLowerCase()),
+      );
+
+      if (serviceInfo?.Publishers) {
+        const portMatch = serviceInfo.Publishers[0]?.URL?.match(/:(\d+)$/);
+        const port = portMatch ? portMatch[1] : '5000';
+
+        logger.info(
+          `Making ${traceCount} requests to http://localhost:${port}/api/quote`,
+        );
+
+        for (let i = 0; i < traceCount; i++) {
+          try {
+            const response = await fetch(`http://localhost:${port}/api/quote`);
+            const data = await response.json();
+            traces.push({
+              request: i + 1,
+              status: response.status,
+              quote: (data as any).quote?.substring(0, 50),
+            });
+            await new Promise(resolve => setTimeout(resolve, 50));
+          } catch (err) {
+            logger.warn(`Request ${i + 1} failed: ${err}`);
+          }
+        }
+      } else {
+        logger.warn(
+          `Could not find port for ${serviceName}, skipping trace generation`,
+        );
+      }
+
+      await new Promise(resolve => setTimeout(resolve, 2000));
+
+      logger.info(`Fetching traces from Jaeger for ${serviceName}...`);
+      const jaegerTracesUrl = `${config.jaegerBaseUrl}/traces?service=${serviceName}&lookback=5m&limit=100`;
+      const jaegerResponse = await fetch(jaegerTracesUrl);
+      const jaegerData = await jaegerResponse.json();
+      const traceList = (jaegerData as any).data || [];
+
+      logger.info(
+        `✅ Service started and ${traceList.length} traces generated`,
+      );
+
+      if (traceList.length > 0) {
+        console.log(`\n📊 === TRACES FOR ${serviceName.toUpperCase()} ===`);
+        traceList.slice(0, 10).forEach((trace: any, idx: number) => {
+          console.log(`\n[Trace ${idx + 1}] ID: ${trace.traceID}`);
+          console.log(
+            `  Duration: ${trace.duration}µs | Spans: ${
+              trace.spans?.length || 0
+            }`,
+          );
+          trace.spans?.forEach((span: any) => {
+            console.log(
+              `    └─ [${span.operationName}] (${span.duration}µs) | Service: ${span.processID}`,
+            );
+            if (span.tags?.length) {
+              span.tags.slice(0, 5).forEach((tag: any) => {
+                if (tag.value && typeof tag.value === 'object') {
+                  console.log(
+                    `       • ${tag.key}: ${JSON.stringify(tag.value).substring(
+                      0,
+                      60,
+                    )}`,
+                  );
+                } else {
+                  console.log(`       • ${tag.key}: ${tag.value}`);
+                }
+              });
+            }
+          });
+        });
+        console.log('\n==============================\n');
+      }
+
+      return res.json({
+        success: true,
+        message: `Service ${serviceName} started and ${traceList.length} traces generated`,
+        serviceName,
+        tracesGenerated: traces.length,
+        tracesInJaeger: traceList.length,
+        traces: traceList.slice(0, 10).map((t: any) => ({
+          traceID: t.traceID,
+          spans: t.spans?.length || 0,
+          duration: t.spans?.[0]?.duration || 0,
+        })),
+        runningServices: runningServices.map((s: any) => ({
+          name: s.Service || s.Name,
+          status: s.State,
+        })),
+      });
+    } catch (error) {
+      logger.error(`Failed to start service and generate traces: ${error}`);
+      return res.status(500).json({
+        error: error instanceof Error ? error.message : String(error),
+        success: false,
+      });
+    }
+  });
+
+  // GET /fra/config - Expose current FRA configuration to the frontend
+  router.get('/fra/config', (_req, res) => {
+    res.json({
+      tracing: {
+        backends: config.tracingBackends,
+        defaultLookbackHours: config.defaultLookbackHours,
+        maxTracesPerService: config.maxTracesPerService,
+      },
+      discovery: {
+        minConfidenceThreshold: config.minConfidenceThreshold,
+        maxScanDepth: config.maxScanDepth,
+      },
+      analysis: {
+        externalCallThreshold: config.externalCallThreshold,
+        confidenceMargin: config.confidenceMargin,
+      },
+      catalog: {
+        defaultOwner: config.catalogDefaultOwner,
+        defaultLifecycle: config.catalogDefaultLifecycle,
+      },
+    });
+  });
+
+  return router;
 }
 
 // Keep deprecated helpers for any external callers (thin re-exports to modules)
