@@ -55,9 +55,12 @@ export async function createServerWrappers(
 
     const wrapperPath = path.join(servicePath, 'otel-server.js');
 
-    // Shared OTEL function-tracing patch — wraps named route handlers so that
-    // business function names (e.g. getAllUsers, save, checkUserExists) appear
-    // as spans in Jaeger instead of only the generic HTTP route spans.
+    // FRA function-tracing helper — creates child spans for named route handlers.
+    // NOTE: We do NOT monkey-patch express.Router here because the OTEL auto-
+    // instrumentation has already patched it before this code runs, and a second
+    // patch causes internal express crashes. Instead we expose a helper that
+    // wraps individual handlers, and patch a specific router/app instance after
+    // creation (see router-only path below).
     const otelPatch = `
 // ── FRA: wrap named Express route handlers with OTEL spans ───────────────────
 const otel = require('@opentelemetry/api');
@@ -65,7 +68,6 @@ const otel = require('@opentelemetry/api');
 function wrapHandlerWithSpan(handler) {
   if (typeof handler !== 'function') return handler;
   const fnName = handler.name;
-  // Only wrap named, non-anonymous, non-framework functions
   if (!fnName || fnName === 'anonymous' || fnName === 'bound dispatch' ||
       fnName.startsWith('bound ') || fnName === 'handle' || fnName === 'next') {
     return handler;
@@ -73,7 +75,8 @@ function wrapHandlerWithSpan(handler) {
   const wrapped = function wrappedHandler(req, res, next) {
     const tracer = otel.trace.getTracer('fra-auto');
     return tracer.startActiveSpan(fnName, span => {
-      span.setAttribute('fra.handler', fnName);
+      span.setAttribute('fra.function_name', fnName);
+      span.setAttribute('fra.invocation_type', 'internal');
       span.setAttribute('http.method', req.method || '');
       span.setAttribute('http.route', req.route ? req.route.path : req.path || '');
       try {
@@ -81,7 +84,6 @@ function wrapHandlerWithSpan(handler) {
           span.end();
           next(err);
         });
-        // If the handler doesn't call next (terminal handler), end span when response finishes
         if (result && typeof result.then === 'function') {
           result.then(() => span.end()).catch(e => { span.recordException(e); span.end(); });
         } else if (!res.headersSent) {
@@ -114,27 +116,6 @@ function patchRouter(router) {
   });
   return router;
 }
-
-// Patch express.Router so all routers created after this point are wrapped
-const express = require('express');
-const origRouter = express.Router.bind(express);
-express.Router = function(...args) {
-  return patchRouter(origRouter(...args));
-};
-const origApp = express;
-const origApplication = express.application;
-if (origApplication) {
-  ['get','post','put','patch','delete','use','all'].forEach(method => {
-    const orig = origApplication[method];
-    if (typeof orig !== 'function') return;
-    origApplication[method] = function(...args) {
-      const patched = args.map(a => Array.isArray(a)
-        ? a.map(wrapHandlerWithSpan)
-        : wrapHandlerWithSpan(a));
-      return orig.apply(this, patched);
-    };
-  });
-}
 // ─────────────────────────────────────────────────────────────────────────────
 `;
 
@@ -161,6 +142,9 @@ ${otelPatch}
 const express = require('express');
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+// Patch this app instance (NOT express.Router globally — that conflicts with OTEL)
+patchRouter(app);
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));

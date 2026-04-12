@@ -58,21 +58,56 @@ export interface ServiceMetrics {
   environment?: string;
 }
 
+/** Risk level from backend analysis. */
+export type RiskLevel = 'HIGH' | 'MEDIUM' | 'LOW' | 'NONE';
+
 /**
- * Analysis result for function placement optimization
+ * Analysis result for function placement optimization.
+ * Matches RelocationResult from function-analytics-backend.
  */
 export interface FunctionPlacementAnalysis {
   functionName: string;
-  serviceName: string;
+  serviceName: string; // currentService
+  currentService: string;
+  suggestedService: string | null;
   totalCalls: number;
+  internalCalls: number;
+  externalCalls: number;
   internalCallPercentage: number;
   externalCallPercentage: number;
+  dominantCaller: string;
+  dominantPercent: number;
   shouldRelocate: boolean;
   relocateReason: string;
   suggestedTargetService: string;
+  /** Unified recommendation from backend: 'relocate' | 'keep' | 'review' | 'extract' */
+  recommendation: 'relocate' | 'keep' | 'review' | 'extract';
+  /** Risk level based on external call percentage */
+  riskLevel: RiskLevel;
+  /** @deprecated use riskLevel */
   securityRisk: 'HIGH' | 'MEDIUM' | 'LOW';
   latencyImpact: number;
+  predictedLatencyImprovement: number;
   crossServiceCallCount: number;
+  /**
+   * Statistical confidence 0–1 based on sample count.
+   * Values < 0.5 should be treated with caution.
+   */
+  confidence: number;
+  /**
+   * Projected change in system cohesion if relocation is applied.
+   * Positive = improvement.
+   */
+  cohesionDelta: number;
+  /**
+   * True when ≥2 distinct services call this function substantially —
+   * suggest extracting to a shared service/library rather than relocating.
+   */
+  isSharedUtility: boolean;
+  /**
+   * True when relocating to suggestedService would create a circular dependency.
+   */
+  circularRisk: boolean;
 }
 
 /**

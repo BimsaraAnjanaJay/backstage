@@ -45,35 +45,75 @@ function processTraces(
 
       if (spanServiceName !== jaegerName) return;
 
-      const functionName = extractGeneralFunctionName(
-        span.operationName,
-        span.tags || [],
+      const opName: string = span.operationName || '';
+      const tags: any[] = span.tags || [];
+      const spanKind =
+        tags.find((t: any) => t.key === 'span.kind')?.value ?? '';
+
+      // ── Noise filtering (mirrors backend FunctionCallAnalyzer) ────────────
+      // Skip DB / SQL spans (Hibernate UUIDs, JPA query spans, transactions)
+      const hasDbTag = tags.some(
+        (t: any) =>
+          t.key === 'db.system' ||
+          t.key === 'db.operation' ||
+          t.key === 'db.statement',
       );
+      const looksLikeSql =
+        /^(SELECT|INSERT|UPDATE|DELETE|MERGE|REPLACE|TRUNCATE|CREATE|DROP|ALTER)[\s_]/i.test(
+          opName,
+        );
+      if (hasDbTag || looksLikeSql) return;
+      if (/^Transaction\./i.test(opName)) return;
+
+      // Skip Spring Boot actuator infrastructure endpoints
+      if (/^(GET|POST|PUT|DELETE|PATCH)\s+\/actuator\//i.test(opName)) return;
+
+      // Skip bare HTTP method names (Eureka/Zipkin heartbeats with no path)
+      if (/^(GET|POST|PUT|DELETE|PATCH)$/i.test(opName.trim())) return;
+
+      // Skip glob wildcard-only operation names (Spring Cloud Gateway catch-all routes)
+      if (/^[/*]+$/.test(opName.trim())) return;
+
+      // Skip Eureka/Zipkin/discovery client spans by URL
+      const httpUrl =
+        tags.find((t: any) => t.key === 'http.url' || t.key === 'url.full')
+          ?.value ?? '';
+      if (
+        spanKind === 'client' &&
+        (httpUrl.includes('eureka') ||
+          httpUrl.includes('zipkin') ||
+          httpUrl.includes(':8761') ||
+          httpUrl.includes(':9411'))
+      )
+        return;
+      // ─────────────────────────────────────────────────────────────────────
+
+      const functionName = extractGeneralFunctionName(opName, tags);
+      if (!functionName) return; // skip spans that produce no useful name
+
       const key = `${displayName}-${functionName}`;
 
       if (!functionMetrics.has(key)) {
-        const httpMethod = span.tags?.find(
+        const httpMethod = tags.find(
           (tag: any) => tag.key === 'http.method',
         )?.value;
-        const httpPath = span.tags?.find(
-          (tag: any) => tag.key === 'http.url',
-        )?.value;
-        const grpcMethod = span.tags?.find(
+        const httpPath = tags.find((tag: any) => tag.key === 'http.url')?.value;
+        const grpcMethod = tags.find(
           (tag: any) => tag.key === 'rpc.method',
         )?.value;
-        const messageQueue = span.tags?.find(
+        const messageQueue = tags.find(
           (tag: any) => tag.key === 'messaging.system',
         )?.value;
-        const eventType = span.tags?.find(
+        const eventType = tags.find(
           (tag: any) => tag.key === 'event.type',
         )?.value;
-        const databaseOp = span.tags?.find(
+        const databaseOp = tags.find(
           (tag: any) => tag.key === 'db.operation',
         )?.value;
-        const version = span.tags?.find(
+        const version = tags.find(
           (tag: any) => tag.key === 'service.version',
         )?.value;
-        const namespace = span.tags?.find(
+        const namespace = tags.find(
           (tag: any) => tag.key === 'k8s.namespace',
         )?.value;
 
@@ -87,15 +127,9 @@ function processTraces(
           microserviceType = 'api';
         } else if (messageQueue) {
           microserviceType = 'worker';
-        } else if (
-          span.operationName.includes('schedule') ||
-          span.operationName.includes('cron')
-        ) {
+        } else if (opName.includes('schedule') || opName.includes('cron')) {
           microserviceType = 'scheduler';
-        } else if (
-          span.operationName.includes('gateway') ||
-          span.operationName.includes('proxy')
-        ) {
+        } else if (opName.includes('gateway') || opName.includes('proxy')) {
           microserviceType = 'gateway';
         }
 
@@ -129,11 +163,10 @@ function processTraces(
       metric.callCount++;
       metric.latency += span.duration || 0;
 
-      const hasError = span.tags?.some(
+      const hasError = tags.some(
         (tag: any) =>
           (tag.key === 'error' && tag.value === true) ||
-          (tag.key === 'http.status_code' &&
-            parseInt(tag.value, 10) >= 400),
+          (tag.key === 'http.status_code' && parseInt(tag.value, 10) >= 400),
       );
       if (hasError) {
         metric.errorRate++;
@@ -224,15 +257,88 @@ function processTraces(
   };
 }
 
+// In-memory cache: baseUrl → known service names. Cleared on each fetch cycle.
+const jaegerServicesCache = new Map<string, string[]>();
+
+/** Call before each fetch cycle so stale service lists are not used. */
+export function clearJaegerServicesCache(): void {
+  jaegerServicesCache.clear();
+}
+
+/**
+ * Fetches the list of services known to Jaeger and returns a resolved name
+ * for `serviceName` (exact match first, then suffix-stripped variants).
+ * Returns null when the service is not found in Jaeger at all — caller should
+ * skip the fetch entirely rather than firing variant probes.
+ *
+ * Result is cached per baseUrl to avoid repeated /api/services calls when
+ * processing many catalog services in the same fetch cycle.
+ */
+export async function resolveJaegerServiceName(
+  serviceName: string,
+  baseUrl: string,
+  fetchApi?: { fetch: typeof fetch },
+  headers?: Record<string, string>,
+): Promise<string | null> {
+  try {
+    let known = jaegerServicesCache.get(baseUrl);
+    if (!known) {
+      const resp = fetchApi
+        ? await fetchApi.fetch(`${baseUrl}/api/services`, { headers })
+        : await fetch(`${baseUrl}/api/services`, { headers });
+      if (!resp.ok) return null;
+      const data = await resp.json();
+      known = (data.data || []) as string[];
+      jaegerServicesCache.set(baseUrl, known);
+    }
+    if (!known || known.length === 0) return null;
+
+    // Build candidate names in priority order:
+    // 1. Exact match
+    // 2. Common suffix variants (-service / -svc stripped or added)
+    // 3. Prefix-stripped variants (e.g. "spring-petclinic-customers-service" → "customers-service")
+    const candidates: string[] = [serviceName];
+    if (!serviceName.endsWith('-service'))
+      candidates.push(`${serviceName}-service`);
+    if (!serviceName.endsWith('-svc')) candidates.push(`${serviceName}-svc`);
+    if (serviceName.endsWith('-service'))
+      candidates.push(serviceName.replace(/-service$/, ''));
+    if (serviceName.endsWith('-svc'))
+      candidates.push(serviceName.replace(/-svc$/, ''));
+
+    // Prefix stripping: try removing leading segments one at a time
+    // e.g. "spring-petclinic-customers-service" → "petclinic-customers-service" → "customers-service"
+    const parts = serviceName.split('-');
+    for (let i = 1; i < parts.length - 1; i++) {
+      const stripped = parts.slice(i).join('-');
+      if (!candidates.includes(stripped)) candidates.push(stripped);
+      // Also try with -service stripped
+      const strippedNoSuffix = stripped
+        .replace(/-service$/, '')
+        .replace(/-svc$/, '');
+      if (
+        strippedNoSuffix !== stripped &&
+        !candidates.includes(strippedNoSuffix)
+      ) {
+        candidates.push(strippedNoSuffix);
+      }
+    }
+
+    for (const c of candidates) {
+      if (known!.includes(c)) return c;
+    }
+    return null; // not in Jaeger — skip entirely
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Fetches service metrics from Jaeger tracing backend using Backstage proxy.
  * Processes traces and extracts function-level metrics.
  *
- * Includes automatic service-name resolution: when 0 traces are found for
- * `serviceName`, common variants such as `${name}-service` and `${name}-svc`
- * are tried before returning empty results. This handles the frequent mismatch
- * between catalog entity names (e.g. "product") and OTEL_SERVICE_NAME values
- * emitted by containers (e.g. "product-service").
+ * Resolves the service name against Jaeger's /api/services list first to avoid
+ * firing multiple blind variant-probe requests for services that don't exist.
  */
 export const fetchJaegerServiceMetrics = async (
   serviceName: string,
@@ -347,38 +453,52 @@ export const fetchJaegerServiceMetrics = async (
     console.log(`🔢 Found ${traces.length} traces for service: ${serviceName}`);
 
     // ── Service-name auto-resolution ────────────────────────────────────────
-    // It's common for the catalog entity name (e.g. "product") to differ from
-    // the OTEL_SERVICE_NAME the container emits (e.g. "product-service").
-    // When we get 0 traces, try a small set of name variants before giving up.
+    // Resolve against the known Jaeger service list first (one request) rather
+    // than firing sequential variant probes.  This avoids O(n*3) requests when
+    // many catalog entities are not instrumented services.
     if (traces.length === 0) {
-      const variants: string[] = [];
-      if (!serviceName.endsWith('-service')) variants.push(`${serviceName}-service`);
-      if (!serviceName.endsWith('-svc')) variants.push(`${serviceName}-svc`);
-      if (serviceName.endsWith('-service')) variants.push(serviceName.replace(/-service$/, ''));
-      if (serviceName.endsWith('-svc')) variants.push(serviceName.replace(/-svc$/, ''));
-
-      for (const variant of variants) {
-        // eslint-disable-next-line no-console
-        console.log(`🔄 Trying service name variant: ${variant}`);
-        const variantUrl = `${baseUrl}/api/traces?service=${encodeURIComponent(variant)}&lookback=${lookback}&limit=200`;
-        try {
-          const variantResp = fetchApi
-            ? await fetchApi.fetch(variantUrl, { headers })
-            : await fetch(variantUrl, { headers });
-          if (variantResp.ok) {
-            const variantData = await variantResp.json();
-            const variantTraces = variantData.data || [];
-            if (variantTraces.length > 0) {
-              // eslint-disable-next-line no-console
-              console.log(`✅ Found ${variantTraces.length} traces under variant name: ${variant}`);
-              return processTraces(variantTraces, variant, serviceName);
-            }
-          }
-        } catch {
-          // try next variant
-        }
+      const resolved = await resolveJaegerServiceName(
+        serviceName,
+        baseUrl,
+        fetchApi,
+        headers,
+      );
+      if (!resolved || resolved === serviceName) {
+        // Not in Jaeger or same name — no data
+        return {
+          serviceName,
+          totalCalls: 0,
+          avgLatency: 0,
+          errorRate: 0,
+          functions: [],
+          source: 'auto',
+        };
       }
-
+      // eslint-disable-next-line no-console
+      console.log(
+        `🔄 Resolved "${serviceName}" → "${resolved}" via Jaeger service list`,
+      );
+      const variantUrl = `${baseUrl}/api/traces?service=${encodeURIComponent(
+        resolved,
+      )}&lookback=${lookback}&limit=200`;
+      try {
+        const variantResp = fetchApi
+          ? await fetchApi.fetch(variantUrl, { headers })
+          : await fetch(variantUrl, { headers });
+        if (variantResp.ok) {
+          const variantData = await variantResp.json();
+          const variantTraces = variantData.data || [];
+          if (variantTraces.length > 0) {
+            // eslint-disable-next-line no-console
+            console.log(
+              `✅ Found ${variantTraces.length} traces under resolved name: ${resolved}`,
+            );
+            return processTraces(variantTraces, resolved, serviceName);
+          }
+        }
+      } catch {
+        // fall through to empty result
+      }
       return {
         serviceName,
         totalCalls: 0,

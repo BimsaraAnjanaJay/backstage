@@ -103,10 +103,16 @@ function applyOtelInjection(
   const lang = service.language;
 
   // ── Node.js & TypeScript ────────────────────────────────────────────────────
+  // @opentelemetry/auto-instrumentations-node covers http, express, grpc, dns, etc.
+  // OTEL_NODE_ENABLED_INSTRUMENTATIONS limits to HTTP + express to reduce noise
+  // while still capturing inter-service calls.
+  // OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT raised to capture fra.* custom attributes.
   if (lang === 'nodejs' || lang === 'typescript') {
     serviceConfig.environment.push(
       'OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318',
       'OTEL_NODE_RESOURCE_DETECTORS=env,host,os,process',
+      'OTEL_NODE_ENABLED_INSTRUMENTATIONS=http,express,fastify,koa,hapi,grpc',
+      'OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT=64',
     );
     const entrypoint = service.entrypoint || 'index.js';
     serviceConfig.command =
@@ -117,24 +123,62 @@ function applyOtelInjection(
   }
 
   // ── Python ──────────────────────────────────────────────────────────────────
+  // opentelemetry-instrument wraps the app with zero-code auto-instrumentation.
+  // OTEL_PYTHON_DISABLED_INSTRUMENTATIONS reduces framework noise (urllib, requests
+  // internal calls) so that app-level function spans are cleaner.
+  // OTEL_PYTHON_LOG_LEVEL=warning silences SDK setup spam.
   if (lang === 'python') {
     serviceConfig.environment.push(
       'OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317',
+      'OTEL_PYTHON_DISABLED_INSTRUMENTATIONS=urllib,urllib3,requests',
+      'OTEL_PYTHON_LOG_LEVEL=warning',
     );
     const entrypoint = service.entrypoint || 'main.py';
+    // Detect whether this is a FastAPI/uvicorn app or a plain Flask/Python app
+    const isUvicorn = entrypoint.endsWith('.py');
+    const runCmd = isUvicorn
+      ? `opentelemetry-instrument python -m uvicorn ${entrypoint.replace(
+          '.py',
+          '',
+        )}:app --host 0.0.0.0 --port ${
+          service.port
+        } 2>/dev/null || opentelemetry-instrument python ${entrypoint}`
+      : `opentelemetry-instrument python ${entrypoint}`;
     serviceConfig.command =
-      `sh -c "pip install --quiet opentelemetry-distro opentelemetry-exporter-otlp && ` +
-      `opentelemetry-bootstrap -a install && ` +
-      `opentelemetry-instrument python ${entrypoint}"`;
+      `sh -c "pip install --quiet opentelemetry-distro opentelemetry-exporter-otlp uvicorn fastapi 2>/dev/null; ` +
+      `opentelemetry-bootstrap -a install 2>/dev/null; ` +
+      `${runCmd}"`;
     return;
   }
 
   // ── Java ─────────────────────────────────────────────────────────────────────
   // Uses the official OpenTelemetry Java agent for zero-code auto-instrumentation.
   // Downloads the agent at container start, then runs the app jar via JAVA_TOOL_OPTIONS.
+  //
+  // OTEL_INSTRUMENTATION_METHODS_INCLUDE tells the Java agent to create spans for
+  // every method in user-defined application packages, giving function-level visibility.
+  // Pattern: "com.example.*[*]" matches all methods in all classes under com.example.
+  //
+  // We derive the package glob from the service name — e.g. "user-service" becomes
+  // "com.*.userservice.*[*]" and "fra.hostjava.*[*]" as fallback wildcards.
+  // The wildcard form "[*]" captures all methods in matched classes.
   if (lang === 'java') {
+    // Build a package pattern that covers common naming conventions:
+    //  - fra.*        (polyglot-benchmark)
+    //  - com.example.*
+    //  - org.example.*
+    //  - io.example.*
+    //  Generic wildcard catches everything not in java.* or javax.*
+    const appPackageGlob = [`fra.*[*]`, `com.*[*]`, `org.*[*]`, `io.*[*]`].join(
+      ';',
+    );
+
     serviceConfig.environment.push(
       'OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317',
+      // Function-level spans: instrument all methods under user app packages
+      `OTEL_INSTRUMENTATION_METHODS_INCLUDE=${appPackageGlob}`,
+      // Reduce framework noise — keep only core HTTP + manual instrumentation
+      'OTEL_INSTRUMENTATION_COMMON_EXPERIMENTAL_CONTROLLER_TELEMETRY_ENABLED=true',
     );
     // When a known jar path was detected at scan time, use it directly.
     // Otherwise search common container paths at runtime.
@@ -231,10 +275,19 @@ function applyOtelInjection(
 function isJavaService(svc: any): boolean {
   const image: string = (svc.image || '').toLowerCase();
   const JAVA_IMAGE_PATTERNS = [
-    'eclipse-temurin', 'openjdk', 'amazoncorretto', 'liberica', 'microsoft/java',
-    'azul/zulu', 'sapmachine', 'bellsoft', 'ibm-semeru',
+    'eclipse-temurin',
+    'openjdk',
+    'amazoncorretto',
+    'liberica',
+    'microsoft/java',
+    'azul/zulu',
+    'sapmachine',
+    'bellsoft',
+    'ibm-semeru',
     // Spring Boot / Quarkus / other Java framework base images
-    'spring', 'quarkus', 'micronaut',
+    'spring',
+    'quarkus',
+    'micronaut',
     // Common project-specific images that are Java (detected by author prefix + no node/python)
   ];
   const NODE_IMAGE_PATTERNS = ['node', 'nodejs', 'deno', 'bun'];
@@ -249,6 +302,22 @@ function isJavaService(svc: any): boolean {
   const cmd = String(svc.command || svc.entrypoint || '').toLowerCase();
   if (cmd.includes('java') || cmd.includes('.jar')) return true;
 
+  // Detect Java via Spring/Quarkus environment variables present on the service
+  const envVars: string[] = Array.isArray(svc.environment)
+    ? svc.environment.map(String)
+    : Object.keys(svc.environment || {});
+  const javaEnvPrefixes = [
+    'SPRING_',
+    'QUARKUS_',
+    'MICRONAUT_',
+    'JAVA_',
+    'HELIDON_',
+  ];
+  if (
+    envVars.some(e => javaEnvPrefixes.some(p => e.toUpperCase().startsWith(p)))
+  )
+    return true;
+
   return false;
 }
 
@@ -257,7 +326,11 @@ export const JAVA_AGENT_DOWNLOAD =
   'https://github.com/open-telemetry/opentelemetry-java-instrumentation/releases/latest/download/opentelemetry-javaagent.jar';
 
 /** Host path where the agent is pre-downloaded and made available to containers */
-export const OTEL_AGENT_HOST_PATH = '/tmp/otelcol-agent/opentelemetry-javaagent.jar';
+// Store the agent under the user's home directory so it's always in Docker's
+// default file-sharing scope (~/... is shared by Docker Desktop on Mac/Windows/Linux).
+export const OTEL_AGENT_HOST_PATH = `${
+  process.env.HOME || '/home/ucsc'
+}/.fra-otel-agent/opentelemetry-javaagent.jar`;
 
 /**
  * Strips bind-mount volumes that reference absolute host paths outside the
@@ -325,8 +398,10 @@ export function injectOtelIntoComposeContent(content: string): string {
       jaegerSvc.networks = customNetworks;
     }
     // Avoid port 9411 conflict with Zipkin tracing-server if one is already defined
-    const has9411 = Object.values(compose.services).some((svc: any) =>
-      Array.isArray(svc.ports) && svc.ports.some((p: any) => String(p).includes('9411')),
+    const has9411 = Object.values(compose.services).some(
+      (svc: any) =>
+        Array.isArray(svc.ports) &&
+        svc.ports.some((p: any) => String(p).includes('9411')),
     );
     if (has9411) {
       jaegerSvc.ports = jaegerSvc.ports.filter(
@@ -336,8 +411,8 @@ export function injectOtelIntoComposeContent(content: string): string {
     compose.services.jaeger = jaegerSvc;
   } else {
     // Ensure existing Jaeger service is on all custom networks
-    const jaegerSvc = Object.values(compose.services).find(
-      (svc: any) => svc.image?.includes('jaeger'),
+    const jaegerSvc = Object.values(compose.services).find((svc: any) =>
+      svc.image?.includes('jaeger'),
     ) as any;
     if (jaegerSvc && customNetworks.length > 0) {
       if (!jaegerSvc.networks) {
@@ -356,18 +431,37 @@ export function injectOtelIntoComposeContent(content: string): string {
 
   // Infrastructure image patterns to skip (monitoring/observability/DB/broker images)
   const INFRA_IMAGES = [
-    'jaeger', 'zipkin', 'openzipkin',
-    'mongo', 'redis', 'postgres', 'mysql', 'mariadb',
-    'rabbitmq', 'kafka', 'zookeeper',
-    'elasticsearch', 'kibana',
-    'prometheus', 'grafana', 'prom/',
-    'nginx', 'haproxy', 'traefik',
+    'jaeger',
+    'zipkin',
+    'openzipkin',
+    'mongo',
+    'redis',
+    'postgres',
+    'mysql',
+    'mariadb',
+    'rabbitmq',
+    'kafka',
+    'zookeeper',
+    'elasticsearch',
+    'kibana',
+    'prometheus',
+    'grafana',
+    'prom/',
+    'nginx',
+    'haproxy',
+    'traefik',
   ];
 
   // Service-name patterns that identify monitoring/observability infra (not business microservices)
   const INFRA_SERVICE_NAMES = [
-    'tracingserver', 'zipkin', 'grafanaserver', 'prometheusserver',
-    'jaeger', 'adminserver', 'discoveryserver', 'configserver',
+    'tracingserver',
+    'zipkin',
+    'grafanaserver',
+    'prometheusserver',
+    'jaeger',
+    'adminserver',
+    'discoveryserver',
+    'configserver',
   ];
 
   // Traffic generator service name patterns to skip
@@ -423,12 +517,17 @@ export function injectOtelIntoComposeContent(content: string): string {
       // OTEL_AGENT_HOST_PATH and bind-mounted into the container at /tmp/otel-agent.jar.
       // JAVA_TOOL_OPTIONS then auto-loads it for ANY java process — including the
       // image's own ENTRYPOINT — with NO command override required.
+      // OTEL_INSTRUMENTATION_METHODS_INCLUDE tells the Java agent to instrument
+      // ALL methods under common user-defined app packages, giving function-level spans.
+      // Covers fra.* (polyglot-benchmark), com.*, org.*, io.* namespaces.
+      const javaMethodsInclude = 'fra.*[*];com.*[*];org.*[*];io.*[*]';
       envList.push(
         'OTEL_TRACES_EXPORTER=otlp',
         `OTEL_SERVICE_NAME=${originalServiceName || name}`,
         'OTEL_RESOURCE_ATTRIBUTES=service.namespace=production',
         'OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317',
         'OTEL_EXPORTER_OTLP_PROTOCOL=grpc',
+        `OTEL_INSTRUMENTATION_METHODS_INCLUDE=${javaMethodsInclude}`,
         'JAVA_TOOL_OPTIONS=-javaagent:/tmp/otel-agent.jar',
       );
 
@@ -437,7 +536,9 @@ export function injectOtelIntoComposeContent(content: string): string {
       if (!svc.volumes) svc.volumes = [];
       // Only add if not already present
       const agentMount = `${OTEL_AGENT_HOST_PATH}:/tmp/otel-agent.jar:ro`;
-      if (!svc.volumes.some((v: string) => String(v).includes('otel-agent.jar'))) {
+      if (
+        !svc.volumes.some((v: string) => String(v).includes('otel-agent.jar'))
+      ) {
         svc.volumes.push(agentMount);
       }
 
@@ -490,4 +591,3 @@ export function injectOtelIntoComposeContent(content: string): string {
 
   return yaml.stringify(compose, { lineWidth: 0 });
 }
-

@@ -18,66 +18,104 @@
  * Extracts a clean function name from Jaeger operation names
  * Handles various microservice patterns (REST, gRPC, message queues, etc.)
  */
-export const extractGeneralFunctionName = (operationName: string, spanTags: any[]): string => {
-  const patterns = [
-    // Node.js Express microservice routes
-    /^(GET|POST|PUT|DELETE|PATCH) \/api\/([^\/]+)\/([^\/\?]+)/i,
-    /^(GET|POST|PUT|DELETE|PATCH) \/([^\/]+)\/([^\/\?]+)/i,
-    // Java Spring Boot microservices
-    /^([A-Za-z0-9]+Controller)\.([A-Za-z0-9]+)/,
-    /^([A-Za-z0-9]+Service)\.([A-Za-z0-9]+)/,
-    // Python Flask/FastAPI microservices
-    /^([a-z_]+)\.([a-z_]+)/,
-    /^([a-z_]+)_([a-z_]+)/,
-    // gRPC microservice methods
-    /^\/([A-Za-z0-9.]+)\/([A-Za-z0-9]+)/,
-    /^([A-Za-z0-9]+)\.([A-Za-z0-9]+)/,
-    // Database operations in microservices
-    /^(SELECT|INSERT|UPDATE|DELETE)\s+([A-Za-z0-9_]+)/i,
-    // Microservice internal function calls
-    /^([A-Za-z0-9]+)::([A-Za-z0-9]+)/,
-    // REST client calls between microservices
-    /^(GET|POST|PUT|DELETE|PATCH)\s+([A-Za-z0-9]+)\/([A-Za-z0-9]+)/i,
-    // Message queue operations
-    /^(publish|consume|process)\s+([A-Za-z0-9_]+)/i,
-    // Event handling
-    /^(handle|process|on)\s+([A-Za-z0-9_]+)/i,
-  ];
+/** Returns the last non-numeric, non-UUID, non-empty path segment, or '' if none found. */
+function lastMeaningfulSegment(urlPath: string): string {
+  const parts = urlPath.split('/').filter(p => p && p !== 'api');
+  // Walk from the end, skip path parameters: numerics, UUIDs, {var}, <var>, *
+  for (let i = parts.length - 1; i >= 0; i--) {
+    const seg = parts[i].split('?')[0]; // strip query string
+    if (!seg || seg === '*') continue;
+    if (/^\d+$/.test(seg)) continue; // numeric ID
+    if (
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+        seg,
+      )
+    )
+      continue; // UUID
+    if (/^\{.+\}$/.test(seg) || /^<.+>$/.test(seg)) continue; // {pathVar} or <pathVar>
+    return seg;
+  }
+  return parts[parts.length - 1]?.split('?')[0] || '';
+}
 
-  for (const pattern of patterns) {
-    const match = operationName.match(pattern);
-    if (match) {
-      return match[match.length - 1] || match[0];
-    }
+export const extractGeneralFunctionName = (
+  operationName: string,
+  spanTags: any[],
+): string => {
+  // ── HTTP method + path (REST endpoints) ─────────────────────────────────
+  // Handle "GET /path", "POST /api/resource/id/sub", etc.
+  // We use full path parsing (not regex groups) to correctly skip numeric IDs.
+  const httpPathMatch = operationName.match(
+    /^(GET|POST|PUT|DELETE|PATCH)\s+(\/[^\s]*)/i,
+  );
+  if (httpPathMatch) {
+    return lastMeaningfulSegment(httpPathMatch[2]) || operationName;
   }
 
-  const functionTag = spanTags.find(tag => 
-    tag.key === 'function.name' || 
-    tag.key === 'code.function' || 
-    tag.key === 'method.name' ||
-    tag.key === 'handler.name' ||
-    tag.key === 'endpoint.name' ||
-    tag.key === 'operation.name'
+  // ── Non-path HTTP spans: "GET service-name" style (cross-service calls) ─
+  const httpServiceMatch = operationName.match(
+    /^(GET|POST|PUT|DELETE|PATCH)\s+([A-Za-z][A-Za-z0-9._-]+)/i,
   );
-  
+  if (httpServiceMatch) {
+    return httpServiceMatch[2];
+  }
+
+  // ── Java/OOP method calls ────────────────────────────────────────────────
+  // "OwnerRepository.findAll", "SomeController.getOwner", "pkg.Class.method"
+  const dotMethodMatch = operationName.match(
+    /\.([A-Za-z][A-Za-z0-9_]+)(?:\(|$)/,
+  );
+  if (dotMethodMatch) {
+    return dotMethodMatch[1];
+  }
+  const simpleDotMatch = operationName.match(
+    /^([A-Za-z][A-Za-z0-9_]*)\.([A-Za-z][A-Za-z0-9_]*)$/,
+  );
+  if (simpleDotMatch) {
+    return simpleDotMatch[2];
+  }
+
+  // ── gRPC ─────────────────────────────────────────────────────────────────
+  const grpcMatch = operationName.match(/^\/[A-Za-z0-9.]+\/([A-Za-z0-9]+)/);
+  if (grpcMatch) {
+    return grpcMatch[1];
+  }
+
+  // ── C++ style "Class::method" ─────────────────────────────────────────────
+  const colonMatch = operationName.match(/^[A-Za-z0-9]+::([A-Za-z0-9]+)/);
+  if (colonMatch) {
+    return colonMatch[1];
+  }
+
+  // ── Named operations: "publish event_name", "handle OrderCreated" ────────
+  const patterns = [
+    /^(publish|consume|process|handle|on)\s+([A-Za-z0-9_]+)/i,
+    /^([a-z_]+)_([a-z_]+)/,
+  ];
+  for (const pattern of patterns) {
+    const match = operationName.match(pattern);
+    if (match) return match[match.length - 1];
+  }
+
+  // ── tag-based function name ───────────────────────────────────────────────
+  const functionTag = spanTags.find(
+    tag =>
+      tag.key === 'function.name' ||
+      tag.key === 'code.function' ||
+      tag.key === 'method.name' ||
+      tag.key === 'handler.name' ||
+      tag.key === 'endpoint.name' ||
+      tag.key === 'operation.name',
+  );
   if (functionTag) {
     return String(functionTag.value);
   }
 
-  const httpPattern = /^(GET|POST|PUT|DELETE|PATCH)\s+(.+)/i;
-  const httpMatch = operationName.match(httpPattern);
-  if (httpMatch) {
-    const path = httpMatch[2];
-    const pathParts = path.split('/').filter(part => part && part !== 'api');
-    if (pathParts.length > 0) {
-      return pathParts[pathParts.length - 1];
-    }
-  }
-
+  // ── Last-resort sanitization ──────────────────────────────────────────────
   return operationName
     .replace(/^(GET|POST|PUT|DELETE|PATCH)\s+/i, '')
     .replace(/^[A-Za-z0-9]+\s+/, '')
     .replace(/[^a-zA-Z0-9_]/g, '_')
     .replace(/_+/g, '_')
-    .replace(/^_|_$/g, '') || 'unknown_function';
+    .replace(/^_|_$/g, '');
 };
