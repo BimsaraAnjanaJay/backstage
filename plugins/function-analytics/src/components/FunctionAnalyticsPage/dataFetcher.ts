@@ -22,12 +22,13 @@ import {
   HybridServiceConfig,
 } from './types';
 import {
-  fetchJaegerServiceMetrics,
-  clearJaegerServicesCache,
-} from './jaegerService';
+  fetchServiceMetrics,
+  clearServicesCache,
+} from './traceService';
 
 /**
- * Fetches metrics from a tracing backend (currently supports Jaeger only)
+ * Fetches metrics from any supported tracing backend.
+ * Routes to the correct adapter based on backend.type.
  */
 const fetchServiceMetricsFromBackend = async (
   serviceName: string,
@@ -36,7 +37,7 @@ const fetchServiceMetricsFromBackend = async (
   fetchApi: { fetch: typeof fetch },
   proxyBaseUrl?: string,
 ): Promise<ServiceMetrics> => {
-  return fetchJaegerServiceMetrics(
+  return fetchServiceMetrics(
     serviceName,
     backend,
     timeRange,
@@ -59,8 +60,8 @@ export const fetchHybridServiceMetrics = async (
 ): Promise<HybridServiceConfig[]> => {
   const hybridConfigs: HybridServiceConfig[] = [];
 
-  // Clear cached Jaeger service list so each fetch cycle gets fresh data
-  clearJaegerServicesCache();
+  // Clear cached service lists so each fetch cycle gets fresh data
+  clearServicesCache();
 
   // Process catalog services
   for (const catalogService of catalogServices) {
