@@ -18,9 +18,28 @@ import * as path from 'path';
 
 export interface TracingBackendConfig {
   id: string;
-  type: 'jaeger' | 'zipkin' | 'tempo';
+  type: 'jaeger' | 'zipkin' | 'tempo' | 'otlp';
   endpoint: string;
   enabled: boolean;
+}
+
+/** Discovery provider types that can be activated via config. */
+export type DiscoveryProviderType = 'monorepo' | 'docker-compose' | 'k8s' | 'static';
+
+/** Statically-defined service entry for the 'static' discovery provider. */
+export interface StaticServiceConfig {
+  name: string;
+  port: number;
+  language: string;
+  path?: string;
+}
+
+/** Kubernetes-specific configuration. */
+export interface KubernetesConfig {
+  enabled: boolean;
+  namespace: string;
+  apiServer?: string;
+  token?: string;
 }
 
 export interface FraConfigSchema {
@@ -30,11 +49,17 @@ export interface FraConfigSchema {
     backends: TracingBackendConfig[];
     defaultLookbackHours: number;
     maxTracesPerService: number;
+    /** Explicit catalog-name → telemetry-name overrides */
+    serviceNameMappings: Record<string, string>;
   };
   discovery: {
     minConfidenceThreshold: number;
     maxScanDepth: number;
     infraServicePatterns: string[];
+    /** Which discovery providers to activate */
+    providers: DiscoveryProviderType[];
+    /** Statically-defined services (used when 'static' provider is active) */
+    staticServices: StaticServiceConfig[];
   };
   analysis: {
     externalCallThreshold: number;
@@ -50,6 +75,8 @@ export interface FraConfigSchema {
     defaultLifecycle: string;
     dryRun: boolean;
   };
+  /** Kubernetes-specific configuration */
+  kubernetes: KubernetesConfig;
 }
 
 /**
@@ -68,8 +95,18 @@ export class FraConfig {
     this.schema = {
       ...defaults,
       ...overrides,
-      tracing: { ...defaults.tracing, ...(overrides.tracing ?? {}) },
-      discovery: { ...defaults.discovery, ...(overrides.discovery ?? {}) },
+      tracing: {
+        ...defaults.tracing,
+        ...(overrides.tracing ?? {}),
+        serviceNameMappings: {
+          ...defaults.tracing.serviceNameMappings,
+          ...(overrides.tracing?.serviceNameMappings ?? {}),
+        },
+      },
+      discovery: {
+        ...defaults.discovery,
+        ...(overrides.discovery ?? {}),
+      },
       analysis: {
         ...defaults.analysis,
         ...(overrides.analysis ?? {}),
@@ -79,6 +116,10 @@ export class FraConfig {
         },
       },
       catalog: { ...defaults.catalog, ...(overrides.catalog ?? {}) },
+      kubernetes: {
+        ...defaults.kubernetes,
+        ...(overrides.kubernetes ?? {}),
+      },
     };
   }
 
@@ -98,6 +139,7 @@ export class FraConfig {
         ],
         defaultLookbackHours: 1,
         maxTracesPerService: 500,
+        serviceNameMappings: {},
       },
       discovery: {
         minConfidenceThreshold: 0.4,
@@ -112,6 +154,8 @@ export class FraConfig {
           'prometheus',
           'grafana',
         ],
+        providers: ['monorepo', 'docker-compose'],
+        staticServices: [],
       },
       analysis: {
         externalCallThreshold: 0.65,
@@ -126,6 +170,10 @@ export class FraConfig {
         defaultOwner: 'team-platform',
         defaultLifecycle: 'production',
         dryRun: false,
+      },
+      kubernetes: {
+        enabled: false,
+        namespace: 'default',
       },
     };
   }
@@ -201,5 +249,26 @@ export class FraConfig {
 
   get catalogDryRun(): boolean {
     return this.schema.catalog.dryRun;
+  }
+
+  get serviceNameMappings(): Record<string, string> {
+    return this.schema.tracing.serviceNameMappings;
+  }
+
+  get discoveryProviders(): DiscoveryProviderType[] {
+    return this.schema.discovery.providers;
+  }
+
+  get staticServices(): StaticServiceConfig[] {
+    return this.schema.discovery.staticServices;
+  }
+
+  get kubernetesConfig(): KubernetesConfig {
+    return this.schema.kubernetes;
+  }
+
+  /** Returns the raw schema for serialization (e.g. /fra/config endpoint). */
+  toJSON(): FraConfigSchema {
+    return { ...this.schema };
   }
 }

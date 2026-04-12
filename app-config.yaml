@@ -96,6 +96,68 @@ proxy:
       pathRewrite:
         '^/api/proxy/prometheus': ''
 
+# ─── Function Analytics (FRA) Plugin Configuration ──────────────────────────
+# Full configuration for the FRA generalized provider/adapter architecture.
+# All fields are optional — defaults match the original hardcoded behavior.
+fra:
+  # One or more repo roots to scan (backward compat: fra.repoPath also works)
+  # workspaceRoot: /path/to/microservices
+
+  tracing:
+    # Supported types: jaeger, zipkin, tempo, otlp
+    backends:
+      - id: local-jaeger
+        type: jaeger
+        endpoint: http://localhost:16686
+        enabled: true
+      # - id: local-zipkin
+      #   type: zipkin
+      #   endpoint: http://localhost:9411
+      #   enabled: false
+      # - id: local-tempo
+      #   type: otlp
+      #   endpoint: http://localhost:3200
+      #   enabled: false
+    # defaultLookbackHours: 1
+    # maxTracesPerService: 500
+    # Explicit catalog-name → telemetry-name overrides
+    # serviceNameMappings:
+    #   spring-petclinic-customers-service: customers-service
+
+  discovery:
+    # Which providers to activate: monorepo, docker-compose, k8s, static
+    providers:
+      - monorepo
+      - docker-compose
+    infraServicePatterns:
+      - mongo
+      - redis
+      - rabbitmq
+      - postgres
+      - jaeger
+      - zipkin
+      - prometheus
+      - grafana
+    # Statically-defined services (used when 'static' provider is active)
+    # staticServices:
+    #   - name: payment-service
+    #     port: 8080
+    #     language: java
+
+  analysis:
+    externalCallThreshold: 0.65
+    # confidenceMargin: 0.05
+    # minSampleSizeForHighConfidence: 100
+    # noiseFilter:
+    #   customBlocklist:
+    #     - my-internal-heartbeat
+    #   customAllowlist:
+    #     - important-endpoint
+
+  # kubernetes:
+  #   enabled: false
+  #   namespace: production
+
 organization:
   name: My Company
 

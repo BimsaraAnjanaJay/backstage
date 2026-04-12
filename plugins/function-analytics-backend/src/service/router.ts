@@ -49,6 +49,8 @@ import {
   buildAllRegistries,
   buildRegistryLookup,
 } from '../modules/static-analysis/FunctionRegistryBuilder';
+import { ProviderRegistry } from '../lib/ProviderRegistry';
+import { FraPipeline } from '../lib/FraPipeline';
 
 /**
  * Dependencies of the function-analytics router
@@ -544,122 +546,33 @@ export async function createRouter(
     response.json({ status: 'ok' });
   });
 
-  // GET /analyze - fetch traces from Jaeger and produce relocation recommendations
+  // GET /analyze - fetch traces and produce relocation recommendations via FraPipeline
   router.get('/analyze', async (req, res) => {
     try {
       const service = (req.query.service as string) || 'all';
       const lookbackParam = (req.query.lookback as string) || '1h';
 
-      let lookback = lookbackParam.toLowerCase();
-      if (lookback === '7d') lookback = '168h';
-
-      logger.info(
-        `Analyzing function calls for service: ${service} with lookback: ${lookback}`,
-      );
-
-      let allTraces: any[] = [];
-      const jaegerBase = config.jaegerBaseUrl;
-
-      const fetchWithTimeout = async (url: string, timeoutMs = 5000) => {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), timeoutMs);
-        try {
-          const r = await fetch(url, { signal: controller.signal as any });
-          return r;
-        } finally {
-          clearTimeout(timer);
-        }
-      };
-
-      if (service === 'all' || service === '') {
-        logger.info('Fetching list of all services from Jaeger');
-        let services: string[] = [];
-        try {
-          const servicesRes = await fetchWithTimeout(`${jaegerBase}/services`);
-          if (servicesRes.ok) {
-            const servicesData = await servicesRes.json();
-            services = (servicesData.data || []) as string[];
-          }
-        } catch (e) {
-          logger.warn(`Could not fetch service list: ${e}`);
-        }
-
-        const targetServices = services.filter(
-          svc =>
-            !svc.startsWith('jaeger') &&
-            !svc.startsWith('unknown_service:') &&
-            svc !== 'jaeger-query' &&
-            svc !== 'jaeger-all-in-one',
-        );
-
-        logger.info(
-          `Fetching traces for ${
-            targetServices.length
-          } services: ${targetServices.join(', ')}`,
-        );
-
-        const traceResults = await Promise.allSettled(
-          targetServices.map(async svc => {
-            const jaegerUrl = `${jaegerBase}/traces?service=${encodeURIComponent(
-              svc,
-            )}&limit=${config.maxTracesPerService}&lookback=${lookback}`;
-            const r = await fetchWithTimeout(jaegerUrl);
-            logger.info(
-              `[Backend Step 1] Fetching raw traces for ${svc} via: ${jaegerUrl}`,
-            );
-            if (!r.ok) return [];
-            const d = await r.json();
-            logger.info(
-              `[Backend Step 1] Jaeger returned ${
-                d.data?.length || 0
-              } span records for ${svc}`,
-            );
-            return (d.data || []) as any[];
-          }),
-        );
-
-        for (const result of traceResults) {
-          if (result.status === 'fulfilled') {
-            for (const trace of result.value) {
-              if (!allTraces.some(t => t.traceID === trace.traceID)) {
-                allTraces.push(trace);
-              }
-            }
-          }
-        }
+      // Parse lookback to hours
+      let lookbackHours = 1;
+      const lookbackLower = lookbackParam.toLowerCase();
+      if (lookbackLower === '7d') {
+        lookbackHours = 168;
       } else {
-        const jaegerUrl = `${jaegerBase}/traces?service=${encodeURIComponent(
-          service,
-        )}&limit=${config.maxTracesPerService}&lookback=${lookback}`;
-        logger.info(`Fetching traces from Jaeger: ${jaegerUrl}`);
-        const response = await fetchWithTimeout(jaegerUrl);
-        if (!response.ok) {
-          throw new Error(
-            `Jaeger API returned ${response.status}: ${response.statusText}`,
-          );
-        }
-        const data = await response.json();
-        allTraces = Array.isArray(data) ? data : data.data || [];
+        const match = lookbackLower.match(/^(\d+)h$/);
+        if (match) lookbackHours = parseInt(match[1], 10);
       }
 
-      logger.info(`Fetched ${allTraces.length} unique traces from Jaeger`);
-
-      const analyzed = analyzeFunctionCalls(allTraces);
       logger.info(
-        `[Backend Step 2] Trace Parser found ${
-          analyzed.length
-        } unique functions. Preview: ${JSON.stringify(analyzed).substring(
-          0,
-          300,
-        )}`,
+        `Analyzing function calls for service: ${service} with lookback: ${lookbackHours}h`,
       );
 
-      const decisions = applyDecisionLogic(analyzed, config);
-      logger.info(
-        `[Backend Step 3] Final Relocation Decisions generated: ${JSON.stringify(
-          decisions,
-        ).substring(0, 300)}`,
-      );
+      const registry = ProviderRegistry.fromConfig(config);
+      const pipeline = new FraPipeline(registry, config, logger);
+      const decisions = await pipeline.analyze({
+        service,
+        lookbackHours,
+        maxTraces: config.maxTracesPerService,
+      });
 
       return res.json(decisions);
     } catch (error) {
@@ -669,6 +582,17 @@ export async function createRouter(
         message: error instanceof Error ? error.message : String(error),
       });
     }
+  });
+
+  // GET /fra/config - returns active FRA configuration as JSON
+  router.get('/fra/config', (_req, res) => {
+    return res.json(config.toJSON());
+  });
+
+  // GET /fra/providers - lists all registered provider type names
+  router.get('/fra/providers', (_req, res) => {
+    const registry = ProviderRegistry.fromConfig(config);
+    return res.json(registry.listProviders());
   });
 
   // POST /microservice/detect - Detect services in repository and build function registries
