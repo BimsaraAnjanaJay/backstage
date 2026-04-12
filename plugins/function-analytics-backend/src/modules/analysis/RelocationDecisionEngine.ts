@@ -135,6 +135,42 @@ function hasCircularRisk(
 }
 
 /**
+ * Computes a composite priority score (0–1) for ranking recommendations.
+ * Higher = more urgent to act on.
+ */
+function computePriorityScore(
+  externalPercent: number,
+  p95ExternalLatency: number,
+  p95InternalLatency: number,
+  confidence: number,
+  cohesionDelta: number,
+): number {
+  // Component 1: external-call ratio (0–1, already normalized)
+  const externalRatioScore = externalPercent;
+
+  // Component 2: normalized latency penalty
+  // P95 cross-service penalty relative to a 500ms ceiling
+  const MAX_LATENCY_MS = 500;
+  const latencyPenalty = Math.min(
+    Math.max(p95ExternalLatency - p95InternalLatency, 0) / MAX_LATENCY_MS,
+    1,
+  );
+
+  // Component 3: confidence (0–1, already computed)
+  const confidenceScore = confidence;
+
+  // Component 4: cohesion improvement (delta is typically -0.5 to +0.5, normalize to 0–1)
+  const cohesionScore = Math.min(Math.max((cohesionDelta + 0.5) / 1.0, 0), 1);
+
+  return (
+    externalRatioScore * 0.4 +
+    latencyPenalty * 0.3 +
+    confidenceScore * 0.2 +
+    cohesionScore * 0.1
+  );
+}
+
+/**
  * Assigns a risk level based on the external-call percentage.
  */
 function computeRiskLevel(externalPercent: number): RiskLevel {
@@ -246,6 +282,15 @@ export function applyDecisionLogic(
     const predictedLatencyImprovement =
       (avgExternalLatency - avgInternalLatency) * externalCalls;
 
+    // ── Composite priority score ─────────────────────────────────────────
+    const priorityScore = computePriorityScore(
+      externalPercent,
+      analysis.p95ExternalLatency,
+      analysis.p95InternalLatency,
+      confidence,
+      cohesionDelta,
+    );
+
     results.push({
       functionName,
       currentService,
@@ -262,6 +307,7 @@ export function applyDecisionLogic(
       riskLevel,
       isSharedUtility,
       circularRisk,
+      priorityScore: Math.round(priorityScore * 1000) / 1000,
     });
   }
 
@@ -270,6 +316,6 @@ export function applyDecisionLogic(
     const rankOrder = { relocate: 0, extract: 1, review: 2, keep: 3 };
     const rankDiff = rankOrder[a.recommendation] - rankOrder[b.recommendation];
     if (rankDiff !== 0) return rankDiff;
-    return b.predictedLatencyImprovement - a.predictedLatencyImprovement;
+    return b.priorityScore - a.priorityScore;
   });
 }

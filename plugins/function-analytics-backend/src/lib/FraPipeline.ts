@@ -143,6 +143,13 @@ export class CohesionAnalyzer implements AnalysisStrategy {
     const avg = (arr: number[]): number =>
       arr.length > 0 ? arr.reduce((a, b) => a + b, 0) / arr.length : 0;
 
+    const percentile = (arr: number[], p: number): number => {
+      if (arr.length === 0) return 0;
+      const sorted = [...arr].sort((a, b) => a - b);
+      const idx = Math.ceil((p / 100) * sorted.length) - 1;
+      return sorted[Math.max(0, idx)];
+    };
+
     const results: FunctionAnalysis[] = [];
 
     for (const stats of functionStats.values()) {
@@ -171,6 +178,10 @@ export class CohesionAnalyzer implements AnalysisStrategy {
         dominantPercent,
         avgInternalLatency: avg(stats.internalLatencies),
         avgExternalLatency: avg(stats.externalLatencies),
+        p95InternalLatency: percentile(stats.internalLatencies, 95),
+        p95ExternalLatency: percentile(stats.externalLatencies, 95),
+        p99InternalLatency: percentile(stats.internalLatencies, 99),
+        p99ExternalLatency: percentile(stats.externalLatencies, 99),
         sampleCount: totalCalls,
         callerServices,
       });

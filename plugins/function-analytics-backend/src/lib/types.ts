@@ -37,6 +37,10 @@ export interface FunctionAnalysis {
   dominantPercent: number;
   avgInternalLatency: number;
   avgExternalLatency: number;
+  p95InternalLatency: number;
+  p95ExternalLatency: number;
+  p99InternalLatency: number;
+  p99ExternalLatency: number;
   /** Total calls observed — used to compute confidence (low sample = low confidence). */
   sampleCount: number;
   /** All external callers and their call counts. Used for bidirectional detection. */
@@ -89,6 +93,13 @@ export interface RelocationResult {
    * circular dependency between the two services.
    */
   circularRisk: boolean;
+
+  /**
+   * Composite priority score 0–1 used to rank recommendations.
+   * Higher = more urgent to act on.
+   * Weighted: externalRatio(40%) + latencyPenalty(30%) + confidence(20%) + cohesionDelta(10%)
+   */
+  priorityScore: number;
 }
 
 /**
