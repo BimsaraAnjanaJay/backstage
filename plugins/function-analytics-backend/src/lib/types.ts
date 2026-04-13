@@ -98,6 +98,14 @@ export interface RelocationResult {
    */
   circularRisk: boolean;
 
+  /** Source code location resolved from static analysis registry. */
+  codeLocation?: {
+    file: string;
+    className?: string;
+    lineStart?: number;
+    displayPath: string;
+  };
+
   /**
    * Composite priority score 0–1 used to rank recommendations.
    * Higher = more urgent to act on.

@@ -593,6 +593,20 @@ export async function createRouter(
         maxTraces: config.maxTracesPerService,
       });
 
+      const servicesFilter = req.query.services as string | undefined;
+      if (servicesFilter) {
+        const serviceList = servicesFilter.split(',').map(s => s.trim());
+        const filtered = decisions.filter(d =>
+          serviceList.some(
+            s =>
+              d.currentService === s ||
+              d.currentService.includes(s) ||
+              s.includes(d.currentService),
+          ),
+        );
+        return res.json(filtered);
+      }
+
       return res.json(decisions);
     } catch (error) {
       logger.error(`Error analyzing function calls: ${error}`);
@@ -2150,6 +2164,282 @@ export async function createRouter(
         defaultLifecycle: config.catalogDefaultLifecycle,
       },
     });
+  });
+
+  // ---------------------------------------------------------------------------
+  // In-memory job store for async analysis jobs
+  // ---------------------------------------------------------------------------
+  interface JobStatus {
+    status:
+      | 'cloning'
+      | 'detecting'
+      | 'deploying'
+      | 'tracing'
+      | 'analyzing'
+      | 'done'
+      | 'error';
+    progress: number;
+    currentStep: string;
+    logs: string[];
+    error?: string;
+    result?: any;
+  }
+
+  const jobStore = new Map<string, JobStatus>();
+
+  // POST /fra/detect-services - detect microservices in a repository
+  router.post('/fra/detect-services', async (req, res) => {
+    try {
+      const { repoUrl } = req.body;
+      if (!repoUrl) {
+        return res.status(400).json({ error: 'repoUrl is required' });
+      }
+
+      const repoName = extractRepoName(repoUrl);
+      const repoPath = config.repoPath(repoName);
+
+      if (!(await fs.pathExists(repoPath))) {
+        await fs.ensureDir(path.dirname(repoPath));
+        await simpleGit().clone(repoUrl, repoPath, [
+          '--depth=1',
+          '--single-branch',
+        ]);
+      }
+
+      const services = await detectServices(repoPath, config);
+      return res.json({ repoName, services, repoPath });
+    } catch (error) {
+      logger.error(`Error detecting services: ${error}`);
+      return res.status(500).json({
+        error: 'Failed to detect services',
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  // POST /fra/run-full-analysis - kick off a full async analysis pipeline
+  router.post('/fra/run-full-analysis', async (req, res) => {
+    try {
+      const { repoUrl, lookbackHours, selectedServices } = req.body;
+      if (!repoUrl) {
+        return res.status(400).json({ error: 'repoUrl is required' });
+      }
+
+      const jobId = `job-${Date.now()}`;
+      const job: JobStatus = {
+        status: 'cloning',
+        progress: 0,
+        currentStep: 'Initializing',
+        logs: [],
+      };
+      jobStore.set(jobId, job);
+
+      const addLog = (msg: string) => {
+        job.logs.push(msg);
+        logger.info(`[Job ${jobId}] ${msg}`);
+      };
+
+      // Fire-and-forget async work
+      (async () => {
+        try {
+          // Step 1 - Clone
+          job.status = 'cloning';
+          job.progress = 10;
+          job.currentStep = 'Cloning repository';
+          addLog('Cloning repository...');
+          const repoName = extractRepoName(repoUrl);
+          const repoPath = config.repoPath(repoName);
+          if (!(await fs.pathExists(repoPath))) {
+            await fs.ensureDir(path.dirname(repoPath));
+            await simpleGit().clone(repoUrl, repoPath, [
+              '--depth=1',
+              '--single-branch',
+            ]);
+          }
+          addLog('Repository cloned.');
+
+          // Pre-flight check
+          if (!(await isDockerAvailable())) {
+            throw new Error('Docker daemon is not running. Please start Docker and try again.');
+          }
+
+          // Step 2 - Detect services
+          job.status = 'detecting';
+          job.progress = 20;
+          job.currentStep = 'Detecting services';
+          addLog('Detecting services...');
+          const services = await detectServices(repoPath, config);
+          addLog(`Detected ${services.length} service(s).`);
+
+          // Filter to selected services if specified
+          const activeServices = selectedServices && selectedServices.length > 0
+            ? services.filter((s: any) => selectedServices.includes(s.name))
+            : services;
+          addLog(`Using ${activeServices.length} of ${services.length} detected services.`);
+
+          // Build function registries for code location mapping
+          let registries: any[] = [];
+          try {
+            registries = await buildAllRegistries(activeServices, repoPath);
+            addLog(`Built function registries: ${registries.reduce((s: number, r: any) => s + r.functions.length, 0)} functions across ${registries.length} services.`);
+          } catch (regErr) {
+            addLog(`Warning: Function registry build failed (non-fatal): ${regErr}`);
+          }
+
+          // Generate catalog-info.yaml
+          try {
+            const catalogYaml = buildCatalogInfo(repoName, repoUrl, activeServices, config);
+            await fs.writeFile(path.join(repoPath, 'catalog-info.yaml'), catalogYaml);
+            addLog('Generated catalog-info.yaml');
+          } catch (catErr) {
+            addLog(`Warning: Catalog info generation failed (non-fatal): ${catErr}`);
+          }
+
+          // Step 3 - Fix Dockerfiles + generate compose
+          job.status = 'deploying';
+          job.progress = 30;
+          job.currentStep = 'Preparing Docker environment';
+          addLog('Fixing Dockerfiles and generating compose file...');
+          await fixDockerfiles(repoPath, logger);
+          const rootComposePath = path.join(repoPath, 'docker-compose.yml');
+          const composeFilePath = path.join(
+            repoPath,
+            'docker-compose.otel.yml',
+          );
+          if (await fs.pathExists(rootComposePath)) {
+            const rootContent = await fs.readFile(rootComposePath, 'utf-8');
+            await fs.writeFile(
+              composeFilePath,
+              injectOtelIntoComposeContent(rootContent),
+            );
+          } else {
+            await fs.writeFile(composeFilePath, generateDockerCompose(activeServices));
+          }
+          addLog('Docker compose file ready.');
+
+          // Step 4 - Docker rm jaeger + compose up
+          job.progress = 50;
+          job.currentStep = 'Starting containers';
+          addLog('Removing stale jaeger container...');
+          await new Promise<void>(resolve => {
+            const rm = spawn('docker', ['rm', '-f', 'jaeger'], {
+              shell: true,
+            });
+            rm.on('close', () => resolve());
+          });
+          addLog('Starting docker compose...');
+          try {
+            await new Promise<void>((resolve, reject) => {
+              const dockerUp = spawn(
+                'docker compose',
+                ['-f', 'docker-compose.otel.yml', 'up', '-d', '--build', '--remove-orphans'],
+                { cwd: repoPath, shell: true, timeout: 300000 },
+              );
+              let stderr = '';
+              dockerUp.stderr?.on('data', (data: Buffer) => { stderr += data.toString(); });
+              dockerUp.on('close', code => {
+                if (code !== 0) reject(new Error(`docker compose up failed: ${stderr}`));
+                else resolve();
+              });
+            });
+            addLog('All containers started successfully.');
+          } catch (composeErr) {
+            addLog(`Full compose up failed: ${composeErr instanceof Error ? composeErr.message : String(composeErr)}`);
+            addLog('Attempting per-service recovery...');
+            try {
+              await buildServicesWithRecovery('docker-compose.otel.yml', repoPath, activeServices, logger);
+              addLog('Per-service recovery completed.');
+            } catch (recoveryErr) {
+              addLog(`Warning: Per-service recovery also had issues: ${recoveryErr}`);
+            }
+          }
+
+          // Step 5 - Wait for services
+          job.progress = 60;
+          job.currentStep = 'Waiting for services to start';
+          addLog('Waiting 15s for services to initialize...');
+          await new Promise(r => setTimeout(r, 15000));
+
+          // Step 6 - Generate traffic
+          job.status = 'tracing';
+          job.progress = 70;
+          job.currentStep = 'Generating traffic';
+          addLog('Generating traffic...');
+          const serviceUrls: string[] = [];
+          const composeContent = await fs.readFile(composeFilePath, 'utf-8');
+          const composeData = yaml.parse(composeContent);
+          for (const [svcName, svcRaw] of Object.entries(
+            composeData.services || {},
+          )) {
+            const svc = svcRaw as any;
+            if (svcName === 'jaeger' || svc.image?.includes('jaeger')) continue;
+            if (Array.isArray(svc.ports) && svc.ports.length > 0) {
+              const hostPort = String(svc.ports[0]).split(':')[0];
+              serviceUrls.push(`http://localhost:${hostPort}`);
+            }
+          }
+          if (serviceUrls.length === 0) {
+            addLog('Warning: No service URLs discovered from compose ports. Will attempt fallback probing.');
+          }
+          const trafficCount = await generateTrafficForRepo(repoPath, serviceUrls, logger, 'docker-compose.otel.yml');
+          addLog(`Traffic generation complete: ${trafficCount} successful requests.`);
+          if (trafficCount === 0) {
+            addLog('Warning: Zero traffic generated. Analysis may have limited data.');
+          }
+
+          // Step 7 - Wait for traces to flush
+          job.progress = 80;
+          job.currentStep = 'Waiting for traces to flush';
+          addLog('Waiting 10s for traces to flush...');
+          await new Promise(r => setTimeout(r, 10000));
+
+          // Step 8 - Run FraPipeline
+          job.status = 'analyzing';
+          job.progress = 90;
+          job.currentStep = 'Analyzing traces';
+          addLog('Running FraPipeline analysis...');
+          const registry = ProviderRegistry.fromConfig(config);
+          const pipeline = new FraPipeline(registry, config, logger);
+          const lookback = lookbackHours || 2;
+          const results = await pipeline.analyze({
+            service: 'all',
+            lookbackHours: lookback,
+            maxTraces: config.maxTracesPerService,
+          }, registries);
+          job.result = { services, results, repoName, repoUrl };
+
+          // Done
+          job.status = 'done';
+          job.progress = 100;
+          job.currentStep = 'Complete';
+          addLog('Full analysis complete.');
+        } catch (err) {
+          job.status = 'error';
+          job.error =
+            err instanceof Error ? err.message : String(err);
+          job.currentStep = 'Error';
+          addLog(`Error: ${job.error}`);
+        }
+      })();
+
+      return res.status(202).json({ jobId });
+    } catch (error) {
+      logger.error(`Error starting full analysis: ${error}`);
+      return res.status(500).json({
+        error: 'Failed to start full analysis',
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  // GET /fra/job/:jobId/status - poll the status of an async analysis job
+  router.get('/fra/job/:jobId/status', (req, res) => {
+    const { jobId } = req.params;
+    const job = jobStore.get(jobId);
+    if (!job) {
+      return res.status(404).json({ error: 'Job not found' });
+    }
+    return res.json(job);
   });
 
   return router;

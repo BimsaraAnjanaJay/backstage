@@ -30,6 +30,7 @@ import { applyDecisionLogic } from '../modules/analysis/RelocationDecisionEngine
 import { analyzeVolatility } from '../modules/analysis/VolatilityAnalyzer';
 import { detectCoLocatedGroups } from '../modules/analysis/CoLocationAnalyzer';
 import { augmentWithStaticCoverage } from '../modules/analysis/StaticCoverageAugmenter';
+import { enrichWithCodeLocations } from '../modules/analysis/TraceToCodeMapper';
 
 // ─── Minimum observations required to emit a result ────────────────────────
 const MIN_SAMPLE_THRESHOLD = 5;
@@ -289,6 +290,16 @@ export class FraPipeline {
     this.logger.info(
       `[FraPipeline] Generated ${decisions.length} relocation decisions, ${coLocationGroups.length} co-location groups`,
     );
+
+    // Step 9: Enrich with code locations from static registries
+    if (registries && registries.length > 0) {
+      const enrichedDecisions = enrichWithCodeLocations(decisions, registries);
+      const enrichedCount = enrichedDecisions.filter(d => d.codeLocation).length;
+      this.logger.info(
+        `[FraPipeline] Enriched ${enrichedCount}/${enrichedDecisions.length} results with code locations`,
+      );
+      return enrichedDecisions;
+    }
 
     return decisions;
   }

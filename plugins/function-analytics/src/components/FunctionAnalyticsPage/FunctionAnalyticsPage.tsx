@@ -14,22 +14,23 @@
  * limitations under the License.
  */
 
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   Page,
   Header,
   HeaderLabel,
   Content,
-  ContentHeader,
-  Progress,
 } from '@backstage/core-components';
-import { useApi, discoveryApiRef } from '@backstage/core-plugin-api';
-import { catalogApiRef } from '@backstage/plugin-catalog-react';
-import { fetchApiRef } from '@backstage/core-plugin-api';
+import { useApi, discoveryApiRef, fetchApiRef } from '@backstage/core-plugin-api';
 import {
+  Button,
+  TextField,
+  Typography,
+  Box,
+  Grid,
   Card,
   CardContent,
-  Typography,
+  Chip,
   Table,
   TableBody,
   TableCell,
@@ -37,1937 +38,768 @@ import {
   TableHead,
   TableRow,
   Paper,
-  Chip,
-  Box,
-  Tabs,
-  Tab,
-  FormControl,
-  InputLabel,
+  LinearProgress,
   Select,
   MenuItem,
-  ListSubheader,
-  Button,
+  FormControl,
+  InputLabel,
+  Tooltip,
+  Stepper,
+  Step,
+  StepLabel,
+  Checkbox,
+  FormControlLabel,
+  CircularProgress,
+  IconButton,
+  TableSortLabel,
 } from '@material-ui/core';
-import { Alert, AlertTitle } from '@material-ui/lab';
-import RefreshIcon from '@material-ui/icons/Refresh';
-import SettingsIcon from '@material-ui/icons/Settings';
-import CheckCircleIcon from '@material-ui/icons/CheckCircle';
-import CancelIcon from '@material-ui/icons/Cancel';
-import CloudQueueIcon from '@material-ui/icons/CloudQueue';
-import StorageIcon from '@material-ui/icons/Storage';
+import ExpandMoreIcon from '@material-ui/icons/ExpandMore';
+import { FunctionAnalyticsClient, RelocationResult, DiscoveredService, JobStatus } from '../../api/FunctionAnalyticsClient';
+import { generateExplanation } from './explanations';
 
-// Import types
-import {
-  PluginMode,
-  CatalogServiceConfig,
-  ManualServiceConfig,
-  TracingBackendConfig,
-  HybridServiceConfig,
-  FunctionCall,
-} from './types';
-
-// Import services and utilities
-import {
-  getCatalogInstrumentedServices,
-  getDefaultTracingBackends,
-} from './catalogService';
-import { fetchHybridServiceMetrics } from './dataFetcher';
-import { useStyles } from './styles';
-
-// Import components
-import { TabPanel } from './components/TabPanel';
-import { ServiceDiscoveryStatus } from './components/ServiceDiscoveryStatus';
-import { ConfigurationDialog } from './components/ConfigurationDialog';
-import { AddServiceDialog } from './components/AddServiceDialog';
-import { GroupTraceResultsDisplay } from './components/GroupTraceResultsDisplay';
-import { DataFlowVisualization } from './components/DataFlowVisualization';
-import { MicroserviceConfigWizard } from '../MicroserviceConfigWizard';
-import { TraceViewer } from '../TraceViewer';
-
-/**
- * Helper function to determine row class based on risk level
- */
-const getRowClassName = (
-  securityRisk: 'HIGH' | 'MEDIUM' | 'LOW',
-  shouldRelocate: boolean,
-  classes: any,
-): string => {
-  if (securityRisk === 'HIGH') return classes.misplacedHighRisk;
-  if (securityRisk === 'MEDIUM') return classes.misplacedMediumRisk;
-  if (shouldRelocate) return classes.misplacedLowRisk;
-  return classes.wellPlaced;
+const pipelineSteps = ['Cloning', 'Detecting', 'Deploying', 'Tracing', 'Analyzing'];
+const statusToStepIndex: Record<string, number> = {
+  cloning: 0,
+  detecting: 1,
+  deploying: 2,
+  tracing: 3,
+  analyzing: 4,
+  done: 5,
+  error: -1,
 };
 
-/**
- * Helper function to determine chip color based on risk level
- */
-const getChipColor = (
-  securityRisk: 'HIGH' | 'MEDIUM' | 'LOW',
-): 'primary' | 'secondary' | 'default' => {
-  if (securityRisk === 'HIGH') return 'secondary';
-  if (securityRisk === 'MEDIUM') return 'default';
-  return 'primary';
+const getLanguageColor = (lang: string): string => {
+  const colors: Record<string, string> = {
+    nodejs: '#68a063',
+    typescript: '#3178c6',
+    javascript: '#f7df1e',
+    python: '#3776ab',
+    java: '#f89820',
+    go: '#00add8',
+    ruby: '#cc342d',
+    dotnet: '#512bd4',
+    rust: '#dea584',
+  };
+  return colors[lang.toLowerCase()] || '#757575';
 };
 
-/**
- * Main Function Analytics Page Component
- * Provides hybrid service discovery, tracing analysis, and function placement recommendations
- */
+const getRecommendationBadge = (rec: string, suggestedService: string | null) => {
+  switch (rec) {
+    case 'relocate':
+      return { label: `Relocate \u2192 ${suggestedService || '?'}`, color: '#d32f2f', bg: '#ffebee' };
+    case 'review':
+      return { label: 'Review', color: '#f57c00', bg: '#fff3e0' };
+    case 'extract':
+      return { label: 'Extract (Shared)', color: '#1565c0', bg: '#e3f2fd' };
+    default:
+      return { label: 'Well Placed', color: '#2e7d32', bg: '#e8f5e9' };
+  }
+};
+
+const getRiskColor = (risk: string): string => {
+  switch (risk) {
+    case 'HIGH':
+      return '#d32f2f';
+    case 'MEDIUM':
+      return '#f57c00';
+    case 'LOW':
+      return '#fbc02d';
+    default:
+      return '#4caf50';
+  }
+};
+
 export const FunctionAnalyticsPage = () => {
-  const classes = useStyles();
   const discoveryApi = useApi(discoveryApiRef);
-  const catalogApi = useApi(catalogApiRef);
   const fetchApi = useApi(fetchApiRef);
-
-  // Use localStorage to preserve UI state across app-config.yaml hot-reloads
-  const [tabValue, setTabValue] = useState<number>(() => {
-    const saved = localStorage.getItem('fa-tabValue');
-    return saved !== null ? parseInt(saved, 10) : 0;
-  });
-  const [selectedService, setSelectedService] = useState<string>(() => {
-    return localStorage.getItem('fa-selectedService') || 'all';
-  });
-
-  useEffect(() => {
-    localStorage.setItem('fa-tabValue', tabValue.toString());
-  }, [tabValue]);
-
-  useEffect(() => {
-    localStorage.setItem('fa-selectedService', selectedService);
-  }, [selectedService]);
-
-  const [timeRange, setTimeRange] = useState('1h');
-
-  // Plugin configuration state
-  const [pluginMode, setPluginMode] = useState<PluginMode>({
-    mode: 'hybrid',
-    description: 'Auto-discover from catalog + manual configuration',
-  });
-
-  // Service configuration state
-  const [catalogServices, setCatalogServices] = useState<
-    CatalogServiceConfig[]
-  >([]);
-  const [manualServices, setManualServices] = useState<ManualServiceConfig[]>(
-    [],
-  );
-  const [tracingBackends, setTracingBackends] = useState<
-    TracingBackendConfig[]
-  >(getDefaultTracingBackends());
-  const [selectedBackend, setSelectedBackend] = useState<TracingBackendConfig>(
-    getDefaultTracingBackends()[0],
+  const client = useMemo(
+    () => new FunctionAnalyticsClient({ discoveryApi, fetchApi }),
+    [discoveryApi, fetchApi],
   );
 
-  // Data state
-  const [hybridConfigs, setHybridConfigs] = useState<HybridServiceConfig[]>([]);
+  // Wizard step
+  const [activeStep, setActiveStep] = useState(0);
 
-  // Loading and error states
-  const [loading, setLoading] = useState(true);
-  const [configLoading, setConfigLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  // Step 1
+  const [repoUrl, setRepoUrl] = useState('');
+  const [detecting, setDetecting] = useState(false);
+  const [detectError, setDetectError] = useState<string | null>(null);
+  const [repoName, setRepoName] = useState('');
 
-  // UI state
-  const [showConfigDialog, setShowConfigDialog] = useState(false);
-  const [showAddServiceDialog, setShowAddServiceDialog] = useState(false);
-  const [deployingService, setDeployingService] = useState<string | null>(null);
-  const [deploymentStatus, setDeploymentStatus] = useState<string>('');
-  const [groupTracing, setGroupTracing] = useState(false);
-  const [groupTraceResults, setGroupTraceResults] = useState<
-    Array<{
-      serviceName: string;
-      jaegerServiceName: string;
-      deployStatus: 'started' | 'failed' | 'skipped';
-      tracesInJaeger: number;
-      traceQueryStatus: 'ok' | 'failed';
-      message: string;
-      latency?: number;
-      startTime?: number;
-      endTime?: number;
-    }>
-  >([]);
-  const [groupTraceError, setGroupTraceError] = useState<string | null>(null);
-  const [jaegerHealthy, setJaegerHealthy] = useState<boolean | null>(null);
+  // Step 2
+  const [services, setServices] = useState<DiscoveredService[]>([]);
+  const [selectedServices, setSelectedServices] = useState<Set<string>>(new Set());
 
-  // Analysis state from the backend
-  const [backendAnalysis, setBackendAnalysis] = useState<any[]>([]);
+  // Step 3
+  const [jobId, setJobId] = useState<string | null>(null);
+  const [jobStatus, setJobStatus] = useState<JobStatus | null>(null);
 
-  // Initialize plugin - detect best mode
-  useEffect(() => {
-    const initializePlugin = async () => {
-      setConfigLoading(true);
-      try {
-        const catalogSvcs = await getCatalogInstrumentedServices(catalogApi);
-        setCatalogServices(catalogSvcs);
+  // Step 4
+  const [results, setResults] = useState<RelocationResult[]>([]);
+  const [sortField, setSortField] = useState<string>('priorityScore');
+  const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc');
+  const [filterRecommendation, setFilterRecommendation] = useState<string>('all');
+  const [filterService, setFilterService] = useState<string>('all');
+  const [filterRisk, setFilterRisk] = useState<string>('all');
+  const [expandedRow, setExpandedRow] = useState<number | null>(null);
 
-        const savedManualServices = localStorage.getItem(
-          'function-analytics-manual-services',
-        );
-        if (savedManualServices) {
-          setManualServices(JSON.parse(savedManualServices));
-        }
-
-        const savedBackends = localStorage.getItem(
-          'function-analytics-backends',
-        );
-        if (savedBackends) {
-          const backends = JSON.parse(savedBackends);
-          setTracingBackends(backends);
-          const activeBackend = backends.find(
-            (b: TracingBackendConfig) => b.enabled,
-          );
-          if (activeBackend) {
-            setSelectedBackend(activeBackend);
-          }
-        }
-
-        if (catalogSvcs.length > 0) {
-          setPluginMode({
-            mode: 'hybrid',
-            description: `Found ${catalogSvcs.length} catalog services`,
-          });
-        } else {
-          setPluginMode({
-            mode: 'manual-only',
-            description:
-              'No catalog services found - manual configuration required',
-          });
-        }
-      } catch (err) {
-        // eslint-disable-next-line no-console
-        console.error('Plugin initialization failed:', err);
-        setError('Failed to initialize plugin');
-      } finally {
-        setConfigLoading(false);
-      }
-    };
-
-    initializePlugin();
-  }, [catalogApi]);
-
-  // Fetch data when configuration changes
-  useEffect(() => {
-    const fetchData = async () => {
-      if (configLoading) return;
-
-      setLoading(true);
-      setError(null);
-
-      try {
-        const proxyBaseUrl = await discoveryApi.getBaseUrl('proxy');
-        const configs = await fetchHybridServiceMetrics(
-          catalogServices,
-          manualServices,
-          selectedBackend,
-          timeRange,
-          fetchApi,
-          proxyBaseUrl,
-        );
-
-        setHybridConfigs(configs);
-
-        if (configs.length === 0) {
-          setError(
-            'No services configured or no trace data available. Check Jaeger connection and service instrumentation.',
-          );
-        }
-      } catch (err) {
-        // eslint-disable-next-line no-console
-        console.error('Error fetching hybrid metrics:', err);
-        setError(
-          err instanceof Error ? err.message : 'Failed to fetch metrics',
-        );
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchData();
-  }, [
-    catalogServices,
-    manualServices,
-    selectedBackend,
-    timeRange,
-    configLoading,
-    fetchApi,
-    discoveryApi,
-  ]);
-
-  // Dedicated effect: fetch backend function placement analysis independently
-  useEffect(() => {
-    const fetchAnalysis = async () => {
-      if (configLoading) return;
-      try {
-        const backendUrl = await discoveryApi.getBaseUrl('function-analytics');
-        const queryParams = new URLSearchParams({
-          lookback: getLookbackForTimeRange(timeRange),
-        }).toString();
-        // eslint-disable-next-line no-console
-        console.log(
-          '🔄 [Analysis] Fetching from:',
-          `${backendUrl}/analyze?${queryParams}`,
-        );
-        const res = await fetchApi.fetch(
-          `${backendUrl}/analyze?${queryParams}`,
-        );
-        if (!res.ok) {
-          throw new Error(`Backend returned ${res.status}: ${res.statusText}`);
-        }
-        const data = await res.json();
-        // eslint-disable-next-line no-console
-        console.log('[Frontend] 📥 Full analysis data received:', data);
-        if (Array.isArray(data)) {
-          setBackendAnalysis(data);
-        } else if (data.success && data.data) {
-          setBackendAnalysis(data.data);
-        }
-      } catch (err) {
-        // eslint-disable-next-line no-console
-        console.error('❌ [Analysis] Failed to fetch backend analysis:', err);
-      }
-    };
-
-    fetchAnalysis();
-  }, [configLoading, fetchApi, discoveryApi, timeRange]);
-
-  // Save manual services to localStorage
-  useEffect(() => {
-    localStorage.setItem(
-      'function-analytics-manual-services',
-      JSON.stringify(manualServices),
-    );
-  }, [manualServices]);
-
-  // Save backends to localStorage
-  useEffect(() => {
-    localStorage.setItem(
-      'function-analytics-backends',
-      JSON.stringify(tracingBackends),
-    );
-  }, [tracingBackends]);
-
-  const handleTabChange = (_: React.ChangeEvent<{}>, newValue: number) => {
-    setTabValue(newValue);
-  };
-
-  const handleAddManualService = (service: Omit<ManualServiceConfig, 'id'>) => {
-    const newService: ManualServiceConfig = {
-      ...service,
-      id: `manual-${Date.now()}`,
-    };
-    setManualServices([...manualServices, newService]);
-  };
-
-  const handleRemoveManualService = (id: string) => {
-    setManualServices(manualServices.filter(s => s.id !== id));
-  };
-
-  const handleRefresh = useCallback(async () => {
-    setLoading(true);
+  const handleDetectServices = useCallback(async () => {
+    setDetecting(true);
+    setDetectError(null);
     try {
-      const proxyBaseUrl = await discoveryApi.getBaseUrl('proxy');
-      const configs = await fetchHybridServiceMetrics(
-        catalogServices,
-        manualServices,
-        selectedBackend,
-        timeRange,
-        fetchApi,
-        proxyBaseUrl,
-      );
-      setHybridConfigs(configs);
-      setError(null);
+      const result = await client.detectServices(repoUrl);
+      setRepoName(result.repoName);
+      setServices(result.services);
+      setSelectedServices(new Set(result.services.map(s => s.name)));
+      setActiveStep(1);
     } catch (err) {
-      // eslint-disable-next-line no-console
-      console.error('Manual refresh error:', err);
-      setError(err instanceof Error ? err.message : 'Failed to refresh');
+      setDetectError(err instanceof Error ? err.message : 'Detection failed');
     } finally {
-      setLoading(false);
+      setDetecting(false);
     }
+  }, [client, repoUrl]);
 
-    // Also re-fetch backend analysis
+  const handleStartAnalysis = useCallback(async () => {
     try {
-      const backendUrl = await discoveryApi.getBaseUrl('function-analytics');
-      const queryParams = new URLSearchParams({
-        lookback: getLookbackForTimeRange(timeRange),
-      }).toString();
-      // eslint-disable-next-line no-console
-      console.log(
-        '🔄 [Refresh] Fetching analysis from:',
-        `${backendUrl}/analyze?${queryParams}`,
+      const { jobId: id } = await client.startFullAnalysis(
+        repoUrl,
+        undefined,
+        Array.from(selectedServices),
       );
-      const res = await fetchApi.fetch(`${backendUrl}/analyze?${queryParams}`);
-      if (res.ok) {
-        const data = await res.json();
-        // eslint-disable-next-line no-console
-        console.log(
-          '📥 [Refresh] Got',
-          Array.isArray(data) ? data.length : 'non-array',
-          'results',
-        );
-        if (Array.isArray(data)) {
-          setBackendAnalysis(data);
-        }
-      }
-    } catch (analysisErr) {
-      // eslint-disable-next-line no-console
-      console.error('❌ [Refresh] Analysis fetch failed:', analysisErr);
-    }
-  }, [
-    catalogServices,
-    manualServices,
-    selectedBackend,
-    timeRange,
-    fetchApi,
-    discoveryApi,
-  ]);
-
-  const handleTestJaeger = async () => {
-    // eslint-disable-next-line no-console
-    console.log('🔍 Testing Jaeger connection...');
-    try {
-      const response = await fetchApi.fetch('/api/proxy/jaeger/api/services');
-      const data = await response.json();
-      // eslint-disable-next-line no-console
-      console.log('✅ Jaeger services:', data);
-      // eslint-disable-next-line no-alert
-      alert(
-        `Jaeger connection successful! Found ${
-          data.data?.length || 0
-        } services.`,
-      );
+      setJobId(id);
+      setActiveStep(2);
     } catch (err) {
-      // eslint-disable-next-line no-console
-      console.error('❌ Jaeger connection failed:', err);
-      // eslint-disable-next-line no-alert
-      alert(
-        'Jaeger connection failed. Check if Jaeger is running on localhost:16686',
-      );
+      setDetectError(err instanceof Error ? err.message : 'Failed to start analysis');
     }
-  };
+  }, [client, repoUrl, selectedServices]);
 
-  const getServiceRepoName = (service: HybridServiceConfig): string => {
-    if (service.source === 'catalog' && 'entity' in service.config) {
-      const annotations = service.config.entity.metadata.annotations || {};
-      // Explicit annotation wins — used by local repos without a GitHub slug
-      const explicit = annotations['function-analytics/repo-name'];
-      if (explicit) return explicit;
-      // Fall back to deriving from GitHub project slug
-      const repoSlug = annotations['github.com/project-slug'];
-      if (repoSlug) {
-        return repoSlug.split('/').pop()?.replace('.git', '') || '';
-      }
-    }
-    return '';
-  };
-
-  const getServiceGitHubUrl = (service: HybridServiceConfig): string => {
-    if (service.source === 'catalog' && 'entity' in service.config) {
-      const repoSlug =
-        service.config.entity.metadata.annotations?.['github.com/project-slug'];
-      if (repoSlug) {
-        // Construct GitHub URL from project slug (e.g., "owner/repo" -> "https://github.com/owner/repo.git")
-        return `https://github.com/${repoSlug}.git`;
-      }
-    }
-    return '';
-  };
-
-  const getJaegerServiceName = (service: HybridServiceConfig): string => {
-    if (service.source === 'catalog' && 'entity' in service.config) {
-      return service.config.jaegerServiceName || service.serviceName;
-    }
-    if (service.source === 'manual') {
-      return service.config.jaegerServiceName || service.serviceName;
-    }
-    return service.serviceName;
-  };
-
-  function getLookbackForTimeRange(range: string): string {
-    if (range === '5m') return '5m';
-    if (range === '24h') return '24h';
-    if (range === '7d') return '168h';
-    return '1h';
-  }
-
-  // Aggregate data for display, explicitly filtering out default backstage catalog noise
-  const allServices = hybridConfigs.filter(service => {
-    if (service.source === 'catalog' && 'entity' in service.config) {
-      const sys =
-        (service.config.entity.spec?.system as string) || 'backstage-core';
-      return ![
-        'backstage-core',
-        'podcast',
-        'artist-engagement-portal',
-        'audio-playback',
-      ].includes(sys);
-    }
-    return true;
-  });
-
-  // Auto-deploy and trace service when selected
+  // Poll job status
   useEffect(() => {
-    const autoDeployAndTrace = async () => {
-      if (
-        !selectedService ||
-        selectedService === 'all' ||
-        selectedService.startsWith('system:')
-      ) {
-        setDeployingService(null);
-        setDeploymentStatus('');
-        return;
-      }
-
-      // Show loading immediately
-      setDeployingService(selectedService);
-      setDeploymentStatus(
-        `🔍 Checking if ${selectedService} exists in Jaeger...`,
-      );
-
+    if (!jobId || activeStep !== 2) return undefined;
+    let cancelled = false;
+    const poll = async () => {
       try {
-        const servicesResponse = await fetchApi.fetch(
-          '/api/proxy/jaeger/api/services',
-        );
-        const servicesData = await servicesResponse.json();
-        const availableServices = servicesData.data || [];
-
-        // Find the service config
-        const service = allServices.find(
-          s => s.serviceName === selectedService,
-        );
-        if (!service) {
-          setDeploymentStatus('');
-          setDeployingService(null);
-          return;
-        }
-
-        let jaegerServiceName = selectedService;
-        let repoName = '';
-
-        if (service.source === 'catalog' && 'entity' in service.config) {
-          jaegerServiceName =
-            service.config.jaegerServiceName || selectedService;
-          repoName = getServiceRepoName(service);
-        }
-
-        // If service not in Jaeger, auto-deploy
-        if (
-          !availableServices.includes(jaegerServiceName) &&
-          !availableServices.includes(selectedService)
-        ) {
-          setDeploymentStatus(
-            `🚀 Starting Jaeger and microservices containers...`,
-          );
-
-          const deployFaUrl = await discoveryApi.getBaseUrl(
-            'function-analytics',
-          );
-          const deployResponse = await fetchApi.fetch(
-            `${deployFaUrl}/service/deploy-and-trace`,
-            {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                serviceName: selectedService,
-                jaegerServiceName,
-                repoName,
-                testEndpoints: (() => {
-                  if (
-                    service.source === 'catalog' &&
-                    'entity' in service.config
-                  ) {
-                    const epStr =
-                      service.config.entity.metadata.annotations?.[
-                        'function-analytics/mock-endpoints'
-                      ];
-                    if (epStr)
-                      return epStr.split(',').map((s: string) => s.trim());
-                  }
-                  return undefined;
-                })(),
-              }),
-            },
-          );
-
-          const result = await deployResponse.json();
-
-          if (!result.success) {
-            throw new Error(result.error || 'Deployment failed');
-          }
-
-          setDeploymentStatus(
-            `✅ Deployed! Jaeger: ${
-              result.jaegerRunning ? 'Running' : 'Failed'
-            } • Generated ${result.tracesInJaeger} traces`,
-          );
-
-          setTimeout(() => {
-            handleRefresh();
-            setDeployingService(null);
-            setDeploymentStatus('');
-          }, 3000);
+        const status = await client.getJobStatus(jobId);
+        if (cancelled) return;
+        setJobStatus(status);
+        if (status.status === 'done' && status.result) {
+          setResults(status.result.results);
+          setServices(status.result.services);
+          setActiveStep(3);
+        } else if (status.status === 'error') {
+          // stay on step 2 showing error
         } else {
-          setDeploymentStatus(
-            `✅ Service "${jaegerServiceName}" is already running`,
-          );
-          setTimeout(() => {
-            setDeployingService(null);
-            setDeploymentStatus('');
-          }, 2000);
+          setTimeout(poll, 2000);
         }
-      } catch (err) {
-        setDeploymentStatus(
-          `❌ Deployment failed: ${
-            err instanceof Error ? err.message : 'Unknown error'
-          }`,
-        );
-        setTimeout(() => {
-          setDeployingService(null);
-          setDeploymentStatus('');
-        }, 5000);
+      } catch {
+        if (!cancelled) setTimeout(poll, 3000);
       }
     };
+    poll();
+    return () => {
+      cancelled = true;
+    };
+  }, [jobId, activeStep, client]);
 
-    autoDeployAndTrace();
-  }, [selectedService, allServices, fetchApi, handleRefresh, discoveryApi]);
-
-  const filteredFunctions: FunctionCall[] = (() => {
-    if (!selectedService || selectedService === 'all') {
-      return allServices.flatMap(service => service.functions || []);
+  const filteredAndSortedResults = useMemo(() => {
+    let filtered = results;
+    if (filterRecommendation !== 'all') {
+      filtered = filtered.filter(r => r.recommendation === filterRecommendation);
     }
-
-    // Check if it's a system group (starts with 'system:')
-    if (selectedService.startsWith('system:')) {
-      const systemName = selectedService.replace('system:', '');
-      return allServices
-        .filter(service => {
-          if (service.source === 'catalog' && 'entity' in service.config) {
-            const serviceSystem =
-              (service.config.entity.spec?.system as string) ||
-              'backstage-core';
-            return serviceSystem === systemName;
-          }
-          if (service.source === 'manual' && systemName === 'manual-services') {
-            return true;
-          }
-          if (
-            systemName === 'backstage-core' &&
-            service.source === 'catalog' &&
-            'entity' in service.config
-          ) {
-            const serviceSystem = service.config.entity.spec?.system as string;
-            return !serviceSystem || serviceSystem === 'backstage-core';
-          }
-          return false;
-        })
-        .flatMap(service => service.functions || []);
+    if (filterService !== 'all') {
+      filtered = filtered.filter(r => r.currentService === filterService);
     }
-
-    // Individual service
-    return allServices
-      .filter(service => service.serviceName === selectedService)
-      .flatMap(service => service.functions || []);
-  })();
-
-  const totalCalls = allServices.reduce(
-    (sum, service) => sum + service.totalCalls,
-    0,
-  );
-  const avgLatency =
-    allServices.length > 0
-      ? allServices.reduce((sum, service) => sum + service.avgLatency, 0) /
-        allServices.length
-      : 0;
-  const criticalFunctions = filteredFunctions.filter(
-    func => func.errorRate > 1 || func.latency > 100,
-  );
-  const catalogServiceCount = allServices.filter(
-    s => s.source === 'catalog',
-  ).length;
-  const manualServiceCount = allServices.filter(
-    s => s.source === 'manual',
-  ).length;
-  const misplacedFunctions = backendAnalysis.filter(
-    (analysis: any) =>
-      analysis.recommendation === 'relocate' ||
-      analysis.recommendation === 'extract' ||
-      analysis.recommendation === 'review',
-  );
-  const selectedGroupServices = useMemo(() => {
-    if (!selectedService.startsWith('system:')) {
-      return [];
+    if (filterRisk !== 'all') {
+      filtered = filtered.filter(r => r.riskLevel === filterRisk);
     }
-
-    return allServices.filter(service => {
-      const systemName = selectedService.replace('system:', '');
-      if (service.source === 'catalog' && 'entity' in service.config) {
-        const serviceSystem =
-          (service.config.entity.spec?.system as string) || 'backstage-core';
-        if (systemName === 'backstage-core') {
-          return (
-            !service.config.entity.spec?.system ||
-            serviceSystem === 'backstage-core'
-          );
-        }
-        return serviceSystem === systemName;
-      }
-      return service.source === 'manual' && systemName === 'manual-services';
+    const sorted = [...filtered].sort((a, b) => {
+      let aVal: any = (a as any)[sortField];
+      let bVal: any = (b as any)[sortField];
+      if (typeof aVal === 'string') aVal = aVal.toLowerCase();
+      if (typeof bVal === 'string') bVal = bVal.toLowerCase();
+      if (aVal < bVal) return sortDirection === 'asc' ? -1 : 1;
+      if (aVal > bVal) return sortDirection === 'asc' ? 1 : -1;
+      return 0;
     });
-  }, [allServices, selectedService]);
+    return sorted;
+  }, [results, filterRecommendation, filterService, filterRisk, sortField, sortDirection]);
 
-  // Fuzzy match between Jaeger service name (currentService) and catalog service name.
-  // Repos often differ: "auth" vs "lightweight-auth" vs "auth-service".
-  // Strip "-service"/"-api" suffixes and common repo prefixes before comparing.
-  const svcNameMatch = (
-    currentService: string,
-    catalogName: string,
-  ): boolean => {
-    if (currentService === catalogName) return true;
-    const strip = (s: string) =>
-      s
-        .toLowerCase()
-        .replace(/-service$/, '')
-        .replace(/-api$/, '');
-    const a = strip(currentService);
-    const b = strip(catalogName);
-    // Exact after stripping ("auth-service" ↔ "auth", "auth" ↔ "auth")
-    if (a === b) return true;
-    // Prefix/suffix: "lightweight-auth" ends with "-auth" ↔ "auth"
-    if (b.endsWith(`-${a}`) || a.endsWith(`-${b}`)) return true;
-    if (b.startsWith(`${a}-`) || a.startsWith(`${b}-`)) return true;
-    return false;
-  };
-
-  // Filter analysis results to only show services relevant to the current selection:
-  // - system selected  → only services belonging to that system
-  // - single service   → only that service
-  // - 'all'            → everything
-  const filteredAnalysis: any[] = (() => {
-    if (selectedService === 'all') return backendAnalysis;
-    if (selectedService.startsWith('system:')) {
-      const names = selectedGroupServices.map(s => s.serviceName);
-      return backendAnalysis.filter((a: any) =>
-        names.some(n => svcNameMatch(a.currentService, n)),
-      );
-    }
-    return backendAnalysis.filter((a: any) =>
-      svcNameMatch(a.currentService, selectedService),
-    );
-  })();
-
-  const handleStartGroupTracing = useCallback(async () => {
-    if (
-      !selectedService.startsWith('system:') ||
-      selectedGroupServices.length === 0
-    ) {
-      return;
-    }
-
-    setGroupTracing(true);
-    setGroupTraceError(null);
-    setGroupTraceResults([]);
-
-    try {
-      // eslint-disable-next-line no-console
-      console.log(`🚀 Starting group tracing for system: ${selectedService}`);
-
-      // Start repo containers first so Jaeger + services are up before per-service trace checks.
-      const repoNames = Array.from(
-        new Set(
-          selectedGroupServices
-            .map(service => getServiceRepoName(service))
-            .filter(Boolean),
-        ),
-      );
-
-      for (const repoName of repoNames) {
-        try {
-          // Find a service from this repo to get GitHub URL
-          const repoService = selectedGroupServices.find(
-            s => getServiceRepoName(s) === repoName,
-          );
-          const gitHubUrl = repoService ? getServiceGitHubUrl(repoService) : '';
-
-          const faBackendUrl = await discoveryApi.getBaseUrl(
-            'function-analytics',
-          );
-          const deployAllResp = await fetchApi.fetch(
-            `${faBackendUrl}/service/deploy-all-and-trace`,
-            {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ repoName, gitHubUrl }),
-            },
-          );
-          if (!deployAllResp.ok) {
-            // eslint-disable-next-line no-console
-            console.warn(
-              `Failed to pre-deploy repo ${repoName}: ${deployAllResp.status}`,
-            );
-          }
-        } catch (deployAllErr) {
-          // eslint-disable-next-line no-console
-          console.warn(`Failed to pre-deploy repo ${repoName}:`, deployAllErr);
-        }
-      }
-
-      // Ensure Jaeger is started via backend before querying traces.
-      try {
-        // Attempt to find a repoName from group services (type-safe)
-        let repoCandidate: string | undefined;
-        for (const s of selectedGroupServices) {
-          if (
-            s &&
-            s.source === 'catalog' &&
-            typeof (s.config as any).entity !== 'undefined'
-          ) {
-            const repoSlug = (s.config as any).entity?.metadata?.annotations?.[
-              'github.com/project-slug'
-            ];
-            if (repoSlug) {
-              repoCandidate = String(repoSlug)
-                .split('/')
-                .pop()
-                ?.replace('.git', '');
-              break;
-            }
-          }
-        }
-
-        const startJaegerFaUrl = await discoveryApi.getBaseUrl(
-          'function-analytics',
-        );
-        const startJaegerResp = await fetchApi.fetch(
-          `${startJaegerFaUrl}/service/start-jaeger`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ repoName: repoCandidate || '' }),
-          },
-        );
-        if (startJaegerResp.ok) {
-          // eslint-disable-next-line no-console
-          console.log('✅ Requested backend to start Jaeger');
-          setJaegerHealthy(true);
-        } else {
-          // eslint-disable-next-line no-console
-          console.warn('⚠️ start-jaeger returned non-ok');
-        }
-      } catch (startErr) {
-        // eslint-disable-next-line no-console
-        console.warn('⚠️ Failed to start Jaeger via backend:', startErr);
-      }
-
-      const jaegerServicesResponse = await fetchApi.fetch(
-        '/api/proxy/jaeger/api/services',
-      );
-      if (!jaegerServicesResponse.ok) {
-        throw new Error(
-          `Jaeger service check failed: ${jaegerServicesResponse.status}`,
-        );
-      }
-      setJaegerHealthy(true);
-      // eslint-disable-next-line no-console
-      console.log('✅ Jaeger is healthy and reachable');
-
-      const lookback = getLookbackForTimeRange(timeRange);
-      const results: Array<{
-        serviceName: string;
-        jaegerServiceName: string;
-        deployStatus: 'started' | 'failed' | 'skipped';
-        tracesInJaeger: number;
-        traceQueryStatus: 'ok' | 'failed';
-        message: string;
-        latency?: number;
-        startTime?: number;
-        endTime?: number;
-      }> = [];
-
-      const parseJsonOrThrow = async (
-        response: Response,
-        context: string,
-      ): Promise<any> => {
-        const contentType = response.headers.get('content-type') || '';
-        const payload = await response.text();
-
-        if (!response.ok) {
-          throw new Error(
-            `${context} failed (${response.status}): ${payload.slice(0, 200)}`,
-          );
-        }
-
-        if (!contentType.includes('application/json')) {
-          const sample = payload.replace(/\s+/g, ' ').slice(0, 140);
-          throw new Error(`${context} returned non-JSON response: ${sample}`);
-        }
-
-        try {
-          return JSON.parse(payload);
-        } catch {
-          const sample = payload.replace(/\s+/g, ' ').slice(0, 140);
-          throw new Error(`${context} returned invalid JSON: ${sample}`);
-        }
-      };
-
-      for (const service of selectedGroupServices) {
-        const startTime = Date.now();
-        let jaegerServiceName = getJaegerServiceName(service);
-        let deployStatus: 'started' | 'failed' | 'skipped' = 'skipped';
-        let tracesInJaeger = 0;
-        let traceQueryStatus: 'ok' | 'failed' = 'ok';
-        let message = '';
-
-        try {
-          // eslint-disable-next-line no-console
-          console.log(`📦 Deploying service: ${service.serviceName}`);
-
-          const deployFaUrl = await discoveryApi.getBaseUrl(
-            'function-analytics',
-          );
-          const deployResponse = await fetchApi.fetch(
-            `${deployFaUrl}/service/deploy-and-trace`,
-            {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                serviceName: service.serviceName,
-                jaegerServiceName,
-                repoName: getServiceRepoName(service),
-                testEndpoints: (() => {
-                  if (
-                    service.source === 'catalog' &&
-                    'entity' in service.config
-                  ) {
-                    const epStr =
-                      service.config.entity.metadata.annotations?.[
-                        'function-analytics/mock-endpoints'
-                      ];
-                    if (epStr)
-                      return epStr.split(',').map((s: string) => s.trim());
-                  }
-                  return undefined;
-                })(),
-              }),
-            },
-          );
-          const deployResult = await parseJsonOrThrow(
-            deployResponse as Response,
-            `Deploy ${service.serviceName}`,
-          );
-
-          if (!deployResult.success) {
-            throw new Error(deployResult.error || 'Deploy failed');
-          }
-
-          deployStatus = 'started';
-          // eslint-disable-next-line no-console
-          console.log(`✅ Service deployed: ${service.serviceName}`);
-          // Use the backend-resolved jaegerServiceName (reads actual OTEL_SERVICE_NAME from compose)
-          // so we query Jaeger with the right name (e.g. 'auth-service' vs 'auth').
-          if (deployResult.jaegerServiceName) {
-            jaegerServiceName = deployResult.jaegerServiceName;
-          }
-          message = `Tracing started; generated ${
-            deployResult.tracesInJaeger || deployResult.tracesGenerated || 0
-          } traces`;
-        } catch (deployErr) {
-          deployStatus = 'failed';
-          message =
-            deployErr instanceof Error
-              ? deployErr.message
-              : 'Deployment failed';
-          // eslint-disable-next-line no-console
-          console.error(
-            `❌ Deployment failed for ${service.serviceName}:`,
-            deployErr,
-          );
-        }
-
-        // Query traces from Jaeger
-        try {
-          // eslint-disable-next-line no-console
-          console.log(`🔍 Querying traces for: ${jaegerServiceName}`);
-
-          const proxyBaseUrl = await discoveryApi.getBaseUrl('proxy');
-          const tracesResponse = await fetchApi.fetch(
-            `${proxyBaseUrl}/jaeger/api/traces?service=${encodeURIComponent(
-              jaegerServiceName,
-            )}&lookback=${lookback}&limit=100`,
-          );
-          const tracesData = await parseJsonOrThrow(
-            tracesResponse as Response,
-            `Jaeger query ${jaegerServiceName}`,
-          );
-          tracesInJaeger = tracesData.data?.length || 0;
-          // eslint-disable-next-line no-console
-          console.log(
-            `📊 Found ${tracesInJaeger} traces for ${jaegerServiceName}`,
-          );
-        } catch (traceErr) {
-          traceQueryStatus = 'failed';
-          if (message) {
-            message = `${message} | Jaeger trace query failed`;
-          } else if (traceErr instanceof Error) {
-            message = traceErr.message;
-          } else {
-            message = 'Jaeger trace query failed';
-          }
-          // eslint-disable-next-line no-console
-          console.warn(
-            `⚠️ Trace query failed for ${jaegerServiceName}:`,
-            traceErr,
-          );
-        }
-
-        // Calculate latency and update message
-        const endTime = Date.now();
-        const latency = endTime - startTime;
-
-        if (tracesInJaeger > 0 && deployStatus !== 'failed') {
-          message = `✅ OK - ${tracesInJaeger} traces available in Jaeger (${latency}ms)`;
-        } else if (tracesInJaeger > 0 && deployStatus === 'failed') {
-          message = `✅ Traces exist (${tracesInJaeger}) but deployment failed (${latency}ms)`;
-        } else if (deployStatus === 'started') {
-          message = `⏳ Service deployed but no traces yet (${latency}ms) - collecting data...`;
-        }
-
-        results.push({
-          serviceName: service.serviceName,
-          jaegerServiceName,
-          deployStatus,
-          tracesInJaeger,
-          traceQueryStatus,
-          message: message || 'No traces found yet',
-          latency,
-          startTime,
-          endTime,
-        });
-      }
-
-      setGroupTraceResults(results);
-      // eslint-disable-next-line no-console
-      console.log('✅ Group tracing completed, refreshing data...');
-
-      // Auto-refresh data after successful tracing
-      await new Promise(resolve => setTimeout(resolve, 2000));
-      await handleRefresh();
-    } catch (err) {
-      setJaegerHealthy(false);
-      const errorMsg =
-        err instanceof Error ? err.message : 'Group tracing failed';
-      setGroupTraceError(errorMsg);
-      // eslint-disable-next-line no-console
-      console.error('❌ Group tracing error:', err);
-    } finally {
-      setGroupTracing(false);
-    }
-  }, [
-    fetchApi,
-    handleRefresh,
-    selectedGroupServices,
-    selectedService,
-    timeRange,
-    discoveryApi,
-  ]);
-
-  if (configLoading) {
-    return <Progress />;
-  }
-
-  if (loading) {
-    return <Progress />;
-  }
+  const tableColumns = [
+    { id: 'functionName', label: 'Function Name' },
+    { id: 'currentService', label: 'Current Service' },
+    { id: 'codeLocation', label: 'File Location' },
+    { id: 'riskLevel', label: 'Risk' },
+    { id: 'recommendation', label: 'Recommendation' },
+    { id: 'suggestedService', label: 'Suggested Target' },
+    { id: 'confidence', label: 'Confidence' },
+    { id: 'predictedLatencyImprovement', label: 'Latency Impact' },
+    { id: 'priorityScore', label: 'Priority Score' },
+  ];
 
   return (
     <Page themeId="tool">
-      <Header
-        title="Function Analytics"
-        subtitle={`Hybrid tracing analysis - ${pluginMode.description}`}
-      >
-        <HeaderLabel label="Mode" value={pluginMode.mode.toUpperCase()} />
-        <HeaderLabel label="Services" value={`${allServices.length} total`} />
-        <HeaderLabel
-          label="Last Updated"
-          value={new Date().toLocaleTimeString()}
-        />
+      <Header title="Function Relocation Analytics" subtitle="Detect misplaced functions in microservice architectures">
+        <HeaderLabel label="Mode" value="Automated" />
       </Header>
-
       <Content>
-        {/* Show deployment status with loading */}
-        {deployingService && deploymentStatus && (
-          <Card
-            style={{
-              marginBottom: 16,
-              backgroundColor: deploymentStatus.includes('✅')
-                ? '#e8f5e9'
-                : '#fff3e0',
-            }}
-          >
+        {/* Top-level stepper showing 4 wizard steps */}
+        <Stepper activeStep={activeStep} style={{ marginBottom: 24 }}>
+          <Step>
+            <StepLabel>Repository Input</StepLabel>
+          </Step>
+          <Step>
+            <StepLabel>Service Selection</StepLabel>
+          </Step>
+          <Step>
+            <StepLabel>Analysis in Progress</StepLabel>
+          </Step>
+          <Step>
+            <StepLabel>Results</StepLabel>
+          </Step>
+        </Stepper>
+
+        {/* Step 0: Repo Input */}
+        {activeStep === 0 && (
+          <Card>
             <CardContent>
-              <Box display="flex" alignItems="center" style={{ gap: 16 }}>
-                {!deploymentStatus.includes('✅') &&
-                  !deploymentStatus.includes('❌') && (
-                    <Box>
-                      <Progress />
-                    </Box>
-                  )}
-                <Box flex={1}>
-                  <Typography variant="h6" gutterBottom>
-                    Deployment Status
-                  </Typography>
-                  <Typography variant="body1" style={{ fontWeight: 500 }}>
-                    {deploymentStatus}
-                  </Typography>
-                  {deploymentStatus.includes('🚀') && (
-                    <Box mt={2}>
-                      <Typography variant="body2" color="textSecondary">
-                        • Starting Jaeger container (http://localhost:16686)
-                      </Typography>
-                      <Typography variant="body2" color="textSecondary">
-                        • Starting all microservice containers
-                      </Typography>
-                      <Typography variant="body2" color="textSecondary">
-                        • Generating HTTP requests to create traces
-                      </Typography>
-                      <Typography
-                        variant="body2"
-                        color="textSecondary"
-                        style={{ marginTop: 8, fontStyle: 'italic' }}
-                      >
-                        Please wait 30-60 seconds...
-                      </Typography>
-                    </Box>
-                  )}
-                </Box>
+              <Typography variant="h5" gutterBottom>
+                Analyze a Microservice Repository
+              </Typography>
+              <Typography variant="body2" color="textSecondary" gutterBottom>
+                Paste a GitHub repository URL containing microservices. The plugin will automatically
+                detect services, deploy them, collect traces, and identify misplaced functions.
+              </Typography>
+              <Box display="flex" alignItems="center" mt={3} style={{ gap: 16 }}>
+                <TextField
+                  label="GitHub Repository URL"
+                  placeholder="https://github.com/org/microservices-repo"
+                  value={repoUrl}
+                  onChange={e => setRepoUrl(e.target.value)}
+                  variant="outlined"
+                  fullWidth
+                  disabled={detecting}
+                />
+                <Button
+                  variant="contained"
+                  color="primary"
+                  onClick={handleDetectServices}
+                  disabled={detecting || !repoUrl.trim()}
+                  style={{ minWidth: 180, height: 56 }}
+                >
+                  {detecting ? <CircularProgress size={24} /> : 'Detect Services'}
+                </Button>
               </Box>
+              {detectError && (
+                <Box mt={2}>
+                  <Typography color="error">{detectError}</Typography>
+                </Box>
+              )}
             </CardContent>
           </Card>
         )}
 
-        <ServiceDiscoveryStatus
-          allServices={allServices}
-          catalogServiceCount={catalogServiceCount}
-          manualServiceCount={manualServiceCount}
-          onConfigureClick={() => setShowConfigDialog(true)}
-          onAddServiceClick={() => setShowAddServiceDialog(true)}
-          onTestJaeger={handleTestJaeger}
-        />
-
-        <ContentHeader title="Function-Level Performance Analytics">
-          <Box display="flex" style={{ gap: '16px' }}>
-            <FormControl
-              variant="outlined"
-              size="small"
-              style={{ minWidth: 300 }}
-            >
-              <InputLabel>Service</InputLabel>
-              <Select
-                value={selectedService}
-                onChange={e => setSelectedService(e.target.value as string)}
-                label="Service"
-                MenuProps={{
-                  PaperProps: { className: classes.selectMenuPaper },
-                  MenuListProps: { className: classes.selectMenuList },
-                }}
-              >
-                <MenuItem value="all">All Services</MenuItem>
-                {(() => {
-                  // Group services by system
-                  const servicesBySystem = new Map<
-                    string,
-                    typeof allServices
-                  >();
-
-                  allServices.forEach(service => {
-                    let systemName: string;
-                    if (
-                      service.source === 'catalog' &&
-                      'entity' in service.config
-                    ) {
-                      systemName =
-                        (service.config.entity.spec?.system as string) ||
-                        'backstage-core';
-                    } else if (service.source === 'manual') {
-                      systemName = 'manual-services';
-                    } else {
-                      systemName = 'backstage-core';
-                    }
-
-                    if (!servicesBySystem.has(systemName)) {
-                      servicesBySystem.set(systemName, []);
-                    }
-                    servicesBySystem.get(systemName)!.push(service);
-                  });
-
-                  // Sort: microservice systems first, then manual, then backstage-core
-                  const sortedSystems = Array.from(servicesBySystem.entries())
-                    .filter(
-                      ([sys]) =>
-                        ![
-                          'backstage-core',
-                          'podcast',
-                          'artist-engagement-portal',
-                        ].includes(sys),
-                    )
-                    .sort(([a], [b]) => {
-                      if (a === 'manual-services') return 1;
-                      if (b === 'manual-services') return -1;
-                      return a.localeCompare(b);
-                    });
-
-                  return sortedSystems.flatMap(([systemName, services]) => {
-                    let systemTitle: string;
-                    if (systemName === 'backstage-core') {
-                      systemTitle = 'Backstage Core Services';
-                    } else if (systemName === 'manual-services') {
-                      systemTitle = 'Manual Services';
-                    } else {
-                      systemTitle = systemName
-                        .split('-')
-                        .map(w => w.charAt(0).toUpperCase() + w.slice(1))
-                        .join(' ');
-                    }
-
-                    // Calculate total services and functions in this system
-                    const totalServices = services.length;
-                    const totalFunctions = services.reduce(
-                      (sum, s) => sum + (s.functions?.length || 0),
-                      0,
-                    );
-
-                    return [
-                      <ListSubheader
-                        key={`header-${systemName}`}
-                        className={classes.selectSubheader}
-                      >
-                        📦 {systemTitle}
-                      </ListSubheader>,
-
-                      // Add system group option
-                      <MenuItem
-                        key={`system-${systemName}`}
-                        value={`system:${systemName}`}
-                        className={classes.selectSystemItem}
-                      >
-                        <Box
-                          display="flex"
-                          alignItems="center"
-                          justifyContent="space-between"
-                          width="100%"
-                        >
-                          <Box
-                            display="flex"
-                            alignItems="center"
-                            style={{ gap: 8 }}
-                          >
-                            <CheckCircleIcon fontSize="small" color="primary" />
-                            <em>All {systemTitle}</em>
-                          </Box>
-                          <Chip
-                            label={`${totalServices} services • ${totalFunctions} functions`}
-                            size="small"
-                            style={{
-                              height: 20,
-                              fontSize: '0.7rem',
-                              marginLeft: 8,
-                            }}
-                            color="primary"
-                          />
-                        </Box>
-                      </MenuItem>,
-
-                      // Individual services
-                      ...services.map(service => (
-                        <MenuItem
-                          key={service.serviceName}
-                          value={service.serviceName}
-                          className={classes.selectServiceItem}
-                        >
-                          <Box
-                            display="flex"
-                            alignItems="center"
-                            justifyContent="space-between"
-                            width="100%"
-                          >
-                            <Box
-                              display="flex"
-                              alignItems="center"
-                              style={{ gap: 8 }}
-                            >
-                              {service.source === 'catalog' ? (
-                                <CloudQueueIcon fontSize="small" />
-                              ) : (
-                                <StorageIcon fontSize="small" />
-                              )}
-                              {service.serviceName}
-                            </Box>
-                            <Box
-                              display="flex"
-                              alignItems="center"
-                              style={{ gap: 4 }}
-                            >
-                              {service.source === 'catalog' &&
-                                'entity' in service.config && (
-                                  <Chip
-                                    label={
-                                      service.config.entity.metadata.description
-                                        ?.match(/(nodejs|python|go|java)/i)?.[0]
-                                        ?.toUpperCase() || 'API'
-                                    }
-                                    size="small"
-                                    style={{ height: 20, fontSize: '0.7rem' }}
-                                    color="primary"
-                                  />
-                                )}
-                              <Chip
-                                label={`${
-                                  service.functions?.length || 0
-                                } functions`}
-                                size="small"
-                                style={{ height: 20, fontSize: '0.7rem' }}
-                                variant="outlined"
-                              />
-                            </Box>
-                          </Box>
-                        </MenuItem>
-                      )),
-                    ];
-                  });
-                })()}
-              </Select>
-            </FormControl>
-
-            <FormControl
-              variant="outlined"
-              size="small"
-              style={{ minWidth: 100 }}
-            >
-              <InputLabel>Time Range</InputLabel>
-              <Select
-                value={timeRange}
-                onChange={e => setTimeRange(e.target.value as string)}
-                label="Time Range"
-                MenuProps={{
-                  PaperProps: { className: classes.selectMenuPaper },
-                  MenuListProps: { className: classes.selectMenuList },
-                }}
-              >
-                <MenuItem value="5m">5 minutes</MenuItem>
-                <MenuItem value="1h">1 hour</MenuItem>
-                <MenuItem value="24h">24 hours</MenuItem>
-                <MenuItem value="7d">7 days</MenuItem>
-              </Select>
-            </FormControl>
-
-            <Button
-              variant="outlined"
-              startIcon={<RefreshIcon />}
-              onClick={handleRefresh}
-              disabled={loading}
-            >
-              Refresh
-            </Button>
-
-            <Button
-              variant="outlined"
-              startIcon={<SettingsIcon />}
-              onClick={() => setShowConfigDialog(true)}
-            >
-              Configure
-            </Button>
-          </Box>
-
-          {error && (
-            <Box mt={2}>
-              <Alert severity="error">
-                <AlertTitle>Configuration Error</AlertTitle>
-                {error}
-              </Alert>
-            </Box>
-          )}
-        </ContentHeader>
-
-        <Paper>
-          <Tabs
-            value={tabValue}
-            onChange={handleTabChange}
-            indicatorColor="primary"
-            textColor="primary"
-          >
-            <Tab label="Configure Services" />
-            <Tab label="Trace Viewer" />
-            <Tab label="Function Details" />
-            <Tab label="Service Overview" />
-            <Tab label="Function Placement Analysis" />
-          </Tabs>
-
-          {/* Tab 0: Configuration Wizard */}
-          <TabPanel value={tabValue} index={0}>
-            <MicroserviceConfigWizard
-              onDeployComplete={systemName => {
-                setSelectedService(systemName);
-                setTabValue(1);
-              }}
-            />
-          </TabPanel>
-
-          {/* Tab 1: Trace Viewer */}
-          <TabPanel value={tabValue} index={1}>
-            {(() => {
-              if (!selectedService || selectedService === 'all') {
-                return (
-                  <Box p={3}>
-                    <Alert severity="info">
-                      <Typography variant="body1">
-                        Please select a service or service group from the
-                        dropdown above.
-                      </Typography>
-                      <Typography variant="body2" style={{ marginTop: 8 }}>
-                        Select an individual service to inspect traces, or a
-                        group to start tracing for the full group.
-                      </Typography>
-                    </Alert>
+        {/* Step 1: Service Selection */}
+        {activeStep === 1 && (
+          <Box>
+            <Card style={{ marginBottom: 16 }}>
+              <CardContent>
+                <Box display="flex" justifyContent="space-between" alignItems="center">
+                  <Box>
+                    <Typography variant="h5" gutterBottom>
+                      Detected Services
+                    </Typography>
+                    <Typography variant="body2" color="textSecondary">
+                      Found {services.length} services in {repoName}. Select the services to include in the analysis.
+                    </Typography>
                   </Box>
-                );
-              }
-
-              if (selectedService.startsWith('system:')) {
-                let jaegerHealthLabel = 'Jaeger: unknown';
-                if (jaegerHealthy === true) {
-                  jaegerHealthLabel = 'Jaeger: healthy';
-                } else if (jaegerHealthy === false) {
-                  jaegerHealthLabel = 'Jaeger: unreachable';
-                }
-
-                return (
-                  <Box p={3}>
-                    <Alert severity="info" style={{ marginBottom: 16 }}>
-                      <Typography variant="body1">
-                        Group selected: {selectedService.replace('system:', '')}
-                      </Typography>
-                      <Typography variant="body2" style={{ marginTop: 8 }}>
-                        Start tracing for all services in this group, then
-                        verify OpenTelemetry and Jaeger flow from this panel.
-                      </Typography>
-                      <Box
-                        mt={2}
-                        display="flex"
-                        alignItems="center"
-                        style={{ gap: 12 }}
-                      >
-                        <Button
-                          variant="contained"
-                          color="primary"
-                          onClick={handleStartGroupTracing}
-                          disabled={
-                            groupTracing || selectedGroupServices.length === 0
-                          }
-                        >
-                          {groupTracing
-                            ? 'Starting Tracing...'
-                            : 'Start Tracing for Group'}
-                        </Button>
-                        <Chip
-                          size="small"
-                          label={jaegerHealthLabel}
-                          color={jaegerHealthy ? 'primary' : 'default'}
+                  <Box display="flex" style={{ gap: 8 }}>
+                    <Button variant="outlined" onClick={() => setActiveStep(0)}>
+                      Back
+                    </Button>
+                    <FormControlLabel
+                      control={
+                        <Checkbox
+                          checked={selectedServices.size === services.length}
+                          onChange={e => {
+                            if (e.target.checked) {
+                              setSelectedServices(new Set(services.map(s => s.name)));
+                            } else {
+                              setSelectedServices(new Set());
+                            }
+                          }}
                         />
-                        <Chip
-                          size="small"
-                          label={`Services: ${selectedGroupServices.length}`}
-                          variant="outlined"
-                        />
-                      </Box>
-                    </Alert>
-
-                    {groupTraceError && (
-                      <Alert severity="error" style={{ marginBottom: 16 }}>
-                        {groupTraceError}
-                      </Alert>
-                    )}
-
-                    <Box mt={2}>
-                      <DataFlowVisualization
-                        jaegerHealthy={jaegerHealthy}
-                        tracesCollected={groupTraceResults.reduce(
-                          (s, r) => s + r.tracesInJaeger,
-                          0,
-                        )}
-                        servicesDeployed={selectedGroupServices.length}
-                        isTracing={groupTracing}
-                      />
-
-                      <GroupTraceResultsDisplay
-                        results={groupTraceResults.map(r => ({
-                          serviceName: r.serviceName,
-                          jaegerServiceName: r.jaegerServiceName,
-                          deployStatus: r.deployStatus,
-                          tracesInJaeger: r.tracesInJaeger,
-                          traceQueryStatus: r.traceQueryStatus,
-                          message: r.message,
-                          startTime: r.startTime,
-                          endTime: r.endTime,
-                          latency: r.latency,
-                        }))}
-                        isLoading={groupTracing}
-                        error={groupTraceError}
-                        jaegerHealthy={jaegerHealthy}
-                        systemName={selectedService.replace('system:', '')}
-                      />
-                    </Box>
-                  </Box>
-                );
-              }
-
-              // Find the service config to get the correct Jaeger service name and repo
-              const service = allServices.find(
-                s => s.serviceName === selectedService,
-              );
-              let jaegerServiceName = selectedService;
-              let repoName = '';
-
-              if (
-                service &&
-                service.source === 'catalog' &&
-                'entity' in service.config
-              ) {
-                // Use the jaegerServiceName from catalog config if available
-                jaegerServiceName =
-                  service.config.jaegerServiceName || selectedService;
-                // Get repo name from catalog metadata
-                repoName = getServiceRepoName(service);
-              }
-              // For manual services without catalog metadata, auto-start is skipped
-              // (repoName will remain empty)
-
-              return (
-                <TraceViewer
-                  serviceName={jaegerServiceName}
-                  timeRange={timeRange}
-                  repoName={repoName}
-                />
-              );
-            })()}
-          </TabPanel>
-
-          {/* Tab 2: Function Details */}
-          <TabPanel value={tabValue} index={2}>
-            <TableContainer className={classes.tableContainer}>
-              <Table>
-                <TableHead>
-                  <TableRow>
-                    <TableCell>Function Name</TableCell>
-                    <TableCell>Service</TableCell>
-                    <TableCell>Source</TableCell>
-                    <TableCell>Type</TableCell>
-                    <TableCell>Microservice Type</TableCell>
-                    <TableCell>HTTP Method</TableCell>
-                    <TableCell>Latency (ms)</TableCell>
-                    <TableCell>Error Rate (%)</TableCell>
-                    <TableCell>Call Count</TableCell>
-                    <TableCell>Dependencies</TableCell>
-                  </TableRow>
-                </TableHead>
-
-                <TableBody>
-                  {filteredFunctions.length > 0 ? (
-                    filteredFunctions.map((func, index) => {
-                      const service = allServices.find(
-                        s => s.serviceName === func.serviceName,
-                      );
-                      return (
-                        <TableRow
-                          key={index}
-                          className={
-                            service?.source === 'catalog'
-                              ? classes.catalogService
-                              : classes.manualService
-                          }
-                        >
-                          <TableCell>{func.functionName}</TableCell>
-                          <TableCell>{func.serviceName}</TableCell>
-                          <TableCell>
-                            <Chip
-                              icon={
-                                service?.source === 'catalog' ? (
-                                  <CloudQueueIcon />
-                                ) : (
-                                  <StorageIcon />
-                                )
-                              }
-                              label={service?.source || 'unknown'}
-                              size="small"
-                              className={classes.serviceSourceChip}
-                              color={
-                                service?.source === 'catalog'
-                                  ? 'primary'
-                                  : 'secondary'
-                              }
-                            />
-                          </TableCell>
-                          <TableCell>
-                            <Chip
-                              label={func.type}
-                              color={
-                                func.type === 'external'
-                                  ? 'secondary'
-                                  : 'primary'
-                              }
-                              size="small"
-                            />
-                          </TableCell>
-                          <TableCell>
-                            <Chip
-                              label={func.microserviceType || 'service'}
-                              color="default"
-                              size="small"
-                            />
-                          </TableCell>
-                          <TableCell>
-                            {func.httpMethod ? (
-                              <Chip
-                                label={func.httpMethod}
-                                color="primary"
-                                size="small"
-                              />
-                            ) : (
-                              '-'
-                            )}
-                          </TableCell>
-                          <TableCell>{func.latency.toFixed(1)}</TableCell>
-                          <TableCell>{func.errorRate.toFixed(2)}</TableCell>
-                          <TableCell>{func.callCount}</TableCell>
-                          <TableCell>{func.dependencies.join(', ')}</TableCell>
-                        </TableRow>
-                      );
-                    })
-                  ) : (
-                    <TableRow>
-                      <TableCell
-                        colSpan={10}
-                        style={{ textAlign: 'center', padding: '40px' }}
-                      >
-                        <Typography color="textSecondary">
-                          No function data available. Configure services to
-                          start analyzing traces.
-                        </Typography>
-                      </TableCell>
-                    </TableRow>
-                  )}
-                </TableBody>
-              </Table>
-            </TableContainer>
-          </TabPanel>
-
-          {/* Tab 3: Service Overview */}
-          <TabPanel value={tabValue} index={3}>
-            <Typography variant="h6" gutterBottom>
-              Service Overview - Hybrid Configuration
-            </Typography>
-            <TableContainer className={classes.tableContainer}>
-              <Table>
-                <TableHead>
-                  <TableRow>
-                    <TableCell>Service Name</TableCell>
-                    <TableCell>Source</TableCell>
-                    <TableCell>Owner</TableCell>
-                    <TableCell>Environment</TableCell>
-                    <TableCell>Status</TableCell>
-                    <TableCell>Total Calls</TableCell>
-                    <TableCell>Avg Latency (ms)</TableCell>
-                    <TableCell>Error Rate (%)</TableCell>
-                    <TableCell>Functions</TableCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {[...allServices]
-                    .sort((a, b) => {
-                      if (
-                        a.connectionStatus === 'connected' &&
-                        b.connectionStatus !== 'connected'
-                      )
-                        return -1;
-                      if (
-                        a.connectionStatus !== 'connected' &&
-                        b.connectionStatus === 'connected'
-                      )
-                        return 1;
-                      return 0;
-                    })
-                    .map((service, index) => (
-                      <TableRow
-                        key={index}
-                        className={
-                          service.source === 'catalog'
-                            ? classes.catalogService
-                            : classes.manualService
-                        }
-                      >
-                        <TableCell>{service.serviceName}</TableCell>
-                        <TableCell>
-                          <Chip
-                            icon={
-                              service.source === 'catalog' ? (
-                                <CloudQueueIcon />
-                              ) : (
-                                <StorageIcon />
-                              )
-                            }
-                            label={service.source}
-                            size="small"
-                            color={
-                              service.source === 'catalog'
-                                ? 'primary'
-                                : 'secondary'
-                            }
-                          />
-                        </TableCell>
-                        <TableCell>{service.owner || 'Unknown'}</TableCell>
-                        <TableCell>
-                          {service.environment || 'Unknown'}
-                        </TableCell>
-                        <TableCell>
-                          <Chip
-                            icon={
-                              service.connectionStatus === 'connected' ? (
-                                <CheckCircleIcon />
-                              ) : (
-                                <CancelIcon />
-                              )
-                            }
-                            label={service.connectionStatus}
-                            size="small"
-                            color={
-                              service.connectionStatus === 'connected'
-                                ? 'primary'
-                                : 'default'
-                            }
-                          />
-                        </TableCell>
-                        <TableCell>{service.totalCalls}</TableCell>
-                        <TableCell>{service.avgLatency.toFixed(1)}</TableCell>
-                        <TableCell>{service.errorRate.toFixed(2)}</TableCell>
-                        <TableCell>{service.functions.length}</TableCell>
-                      </TableRow>
-                    ))}
-                </TableBody>
-              </Table>
-            </TableContainer>
-          </TabPanel>
-
-          {/* Tab 4: Function Placement Analysis */}
-          <TabPanel value={tabValue} index={4}>
-            <Typography variant="h6" gutterBottom>
-              Function Placement Analysis - Identify Misplaced Functions
-            </Typography>
-            <TableContainer className={classes.tableContainer}>
-              <Table>
-                <TableHead>
-                  <TableRow>
-                    <TableCell>Function Name</TableCell>
-                    <TableCell>Current Service</TableCell>
-                    <TableCell>Source</TableCell>
-                    <TableCell>Internal %</TableCell>
-                    <TableCell>External %</TableCell>
-                    <TableCell>Risk Level</TableCell>
-                    <TableCell>Recommended Action</TableCell>
-                    <TableCell>Suggested Target Service</TableCell>
-                    <TableCell>Latency Impact</TableCell>
-                    <TableCell title="Statistical confidence based on sample count">
-                      Confidence
-                    </TableCell>
-                    <TableCell title="Projected cohesion improvement if relocated (positive = better)">
-                      Cohesion Δ
-                    </TableCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {filteredAnalysis.length > 0 ? (
-                    filteredAnalysis.map((analysis: any, index: number) => {
-                      const service = allServices.find(
-                        s => s.serviceName === analysis.currentService,
-                      );
-
-                      const totalCallsForAnalysis =
-                        analysis.internalCalls + analysis.externalCalls;
-                      const internalPerc =
-                        totalCallsForAnalysis > 0
-                          ? (analysis.internalCalls / totalCallsForAnalysis) *
-                            100
-                          : 0;
-                      const externalPerc =
-                        totalCallsForAnalysis > 0
-                          ? (analysis.externalCalls / totalCallsForAnalysis) *
-                            100
-                          : 0;
-
-                      // Use riskLevel from backend when available, compute locally as fallback
-                      let riskLevel: string = analysis.riskLevel || 'NONE';
-                      if (
-                        !analysis.riskLevel &&
-                        analysis.recommendation === 'relocate'
-                      ) {
-                        if (externalPerc > 85) riskLevel = 'HIGH';
-                        else if (externalPerc > 75) riskLevel = 'MEDIUM';
-                        else riskLevel = 'LOW';
                       }
+                      label="Select All"
+                    />
+                  </Box>
+                </Box>
+                {selectedServices.size < 2 && (
+                  <Box mt={1}>
+                    <Typography variant="body2" style={{ color: '#f57c00' }}>
+                      Select at least 2 services for meaningful cross-service analysis.
+                    </Typography>
+                  </Box>
+                )}
+              </CardContent>
+            </Card>
 
-                      // Recommendation label — now includes 'extract' for shared utilities
-                      let recLabel = 'Well Placed';
-                      if (analysis.recommendation === 'relocate')
-                        recLabel = `Relocate → ${
-                          analysis.suggestedService || '?'
-                        }`;
-                      else if (analysis.recommendation === 'extract')
-                        recLabel = 'Extract to Shared Library';
-                      else if (analysis.recommendation === 'review')
-                        recLabel = analysis.circularRisk
-                          ? 'Review (Circular Risk)'
-                          : 'Review Architecture';
+            <Grid container spacing={2}>
+              {services.map(svc => (
+                <Grid item xs={12} sm={6} md={4} key={svc.name}>
+                  <Card
+                    style={{
+                      border: selectedServices.has(svc.name) ? '2px solid #1976d2' : '1px solid #e0e0e0',
+                      cursor: 'pointer',
+                    }}
+                    onClick={() => {
+                      const next = new Set(selectedServices);
+                      if (next.has(svc.name)) next.delete(svc.name);
+                      else next.add(svc.name);
+                      setSelectedServices(next);
+                    }}
+                  >
+                    <CardContent>
+                      <Box display="flex" justifyContent="space-between" alignItems="center">
+                        <Typography variant="h6">{svc.name}</Typography>
+                        <Checkbox checked={selectedServices.has(svc.name)} color="primary" />
+                      </Box>
+                      <Box display="flex" style={{ gap: 8 }} mt={1}>
+                        <Chip
+                          label={svc.language.toUpperCase()}
+                          size="small"
+                          style={{ backgroundColor: getLanguageColor(svc.language), color: '#fff' }}
+                        />
+                        {svc.port > 0 && <Chip label={`Port ${svc.port}`} size="small" variant="outlined" />}
+                        {svc.hasDockerfile && <Chip label="Dockerfile" size="small" variant="outlined" color="primary" />}
+                      </Box>
+                      <Typography variant="caption" color="textSecondary" style={{ marginTop: 8, display: 'block' }}>
+                        {svc.path}
+                      </Typography>
+                    </CardContent>
+                  </Card>
+                </Grid>
+              ))}
+            </Grid>
 
-                      const confidencePct =
-                        analysis.confidence !== undefined
-                          ? Math.round(analysis.confidence * 100)
-                          : 100;
-                      const cohesionDelta = analysis.cohesionDelta ?? 0;
+            <Box mt={3} display="flex" justifyContent="center">
+              <Button
+                variant="contained"
+                color="primary"
+                size="large"
+                onClick={handleStartAnalysis}
+                disabled={selectedServices.size < 2}
+                style={{ minWidth: 240 }}
+              >
+                Start Full Analysis
+              </Button>
+            </Box>
+          </Box>
+        )}
 
-                      return (
+        {/* Step 2: Progress */}
+        {activeStep === 2 && (
+          <Card>
+            <CardContent>
+              <Typography variant="h5" gutterBottom>
+                Analysis in Progress
+              </Typography>
+              <Box mt={2} mb={3}>
+                <Stepper activeStep={jobStatus ? statusToStepIndex[jobStatus.status] ?? 0 : 0} alternativeLabel>
+                  {pipelineSteps.map(label => (
+                    <Step key={label}>
+                      <StepLabel>{label}</StepLabel>
+                    </Step>
+                  ))}
+                </Stepper>
+              </Box>
+              <Box mb={2}>
+                <LinearProgress
+                  variant="determinate"
+                  value={jobStatus?.progress || 0}
+                  style={{ height: 8, borderRadius: 4 }}
+                />
+                <Box display="flex" justifyContent="space-between" mt={1}>
+                  <Typography variant="body2" color="textSecondary">
+                    {jobStatus?.currentStep || 'Initializing...'}
+                  </Typography>
+                  <Typography variant="body2" color="textSecondary">
+                    {jobStatus?.progress || 0}%
+                  </Typography>
+                </Box>
+              </Box>
+              {jobStatus?.status === 'error' && (
+                <Box mt={2} p={2} style={{ backgroundColor: '#ffebee', borderRadius: 4 }}>
+                  <Typography color="error" variant="body1">
+                    Error: {jobStatus.error}
+                  </Typography>
+                  <Button variant="outlined" onClick={() => setActiveStep(0)} style={{ marginTop: 8 }}>
+                    Try Again
+                  </Button>
+                </Box>
+              )}
+              <Paper
+                variant="outlined"
+                style={{ maxHeight: 300, overflow: 'auto', padding: 16, backgroundColor: '#1e1e1e', marginTop: 16 }}
+              >
+                {(jobStatus?.logs || []).map((log, i) => (
+                  <Typography
+                    key={i}
+                    variant="body2"
+                    style={{ fontFamily: 'monospace', color: '#d4d4d4', fontSize: '0.8rem' }}
+                  >
+                    {log}
+                  </Typography>
+                ))}
+                {(!jobStatus?.logs || jobStatus.logs.length === 0) && (
+                  <Typography variant="body2" style={{ fontFamily: 'monospace', color: '#666' }}>
+                    Waiting for logs...
+                  </Typography>
+                )}
+              </Paper>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Step 3: Results */}
+        {activeStep === 3 && (
+          <Box>
+            {/* Summary Cards */}
+            <Grid container spacing={2} style={{ marginBottom: 24 }}>
+              <Grid item xs={12} sm={4}>
+                <Card>
+                  <CardContent style={{ textAlign: 'center' }}>
+                    <Typography variant="h3" color="primary">
+                      {results.length}
+                    </Typography>
+                    <Typography variant="body2" color="textSecondary">
+                      Functions analyzed across {new Set(results.map(r => r.currentService)).size} services
+                    </Typography>
+                  </CardContent>
+                </Card>
+              </Grid>
+              <Grid item xs={12} sm={4}>
+                <Card>
+                  <CardContent style={{ textAlign: 'center' }}>
+                    <Typography variant="h3" style={{ color: '#d32f2f' }}>
+                      {results.filter(r => r.recommendation !== 'keep').length}
+                    </Typography>
+                    <Typography variant="body2" color="textSecondary">
+                      Functions need attention
+                    </Typography>
+                  </CardContent>
+                </Card>
+              </Grid>
+              <Grid item xs={12} sm={4}>
+                <Card>
+                  <CardContent style={{ textAlign: 'center' }}>
+                    <Typography variant="h3" style={{ color: '#2e7d32' }}>
+                      {Math.round(
+                        results
+                          .filter(r => r.recommendation === 'relocate')
+                          .reduce((s, r) => s + r.predictedLatencyImprovement, 0),
+                      )}
+                      ms
+                    </Typography>
+                    <Typography variant="body2" color="textSecondary">
+                      Estimated latency savings
+                    </Typography>
+                  </CardContent>
+                </Card>
+              </Grid>
+            </Grid>
+
+            {/* Filter Bar */}
+            <Paper style={{ padding: 16, marginBottom: 16 }}>
+              <Box display="flex" style={{ gap: 16 }} alignItems="center">
+                <FormControl variant="outlined" size="small" style={{ minWidth: 160 }}>
+                  <InputLabel>Recommendation</InputLabel>
+                  <Select
+                    value={filterRecommendation}
+                    onChange={e => setFilterRecommendation(e.target.value as string)}
+                    label="Recommendation"
+                  >
+                    <MenuItem value="all">All</MenuItem>
+                    <MenuItem value="relocate">Relocate</MenuItem>
+                    <MenuItem value="review">Review</MenuItem>
+                    <MenuItem value="extract">Extract</MenuItem>
+                    <MenuItem value="keep">Well Placed</MenuItem>
+                  </Select>
+                </FormControl>
+                <FormControl variant="outlined" size="small" style={{ minWidth: 160 }}>
+                  <InputLabel>Service</InputLabel>
+                  <Select
+                    value={filterService}
+                    onChange={e => setFilterService(e.target.value as string)}
+                    label="Service"
+                  >
+                    <MenuItem value="all">All Services</MenuItem>
+                    {Array.from(new Set(results.map(r => r.currentService)))
+                      .sort()
+                      .map(s => (
+                        <MenuItem key={s} value={s}>
+                          {s}
+                        </MenuItem>
+                      ))}
+                  </Select>
+                </FormControl>
+                <FormControl variant="outlined" size="small" style={{ minWidth: 120 }}>
+                  <InputLabel>Risk</InputLabel>
+                  <Select
+                    value={filterRisk}
+                    onChange={e => setFilterRisk(e.target.value as string)}
+                    label="Risk"
+                  >
+                    <MenuItem value="all">All</MenuItem>
+                    <MenuItem value="HIGH">High</MenuItem>
+                    <MenuItem value="MEDIUM">Medium</MenuItem>
+                    <MenuItem value="LOW">Low</MenuItem>
+                    <MenuItem value="NONE">None</MenuItem>
+                  </Select>
+                </FormControl>
+                <Typography variant="body2" color="textSecondary" style={{ marginLeft: 'auto' }}>
+                  Showing {filteredAndSortedResults.length} of {results.length} functions
+                </Typography>
+                <Button variant="outlined" size="small" onClick={() => setActiveStep(0)}>
+                  New Analysis
+                </Button>
+              </Box>
+            </Paper>
+
+            {/* Results Table */}
+            <TableContainer component={Paper}>
+              <Table size="small">
+                <TableHead>
+                  <TableRow style={{ backgroundColor: '#1976d2' }}>
+                    <TableCell style={{ color: '#fff', fontWeight: 'bold', width: 40 }} />
+                    {tableColumns.map(col => (
+                      <TableCell
+                        key={col.id}
+                        style={{ color: '#fff', fontWeight: 'bold', cursor: 'pointer' }}
+                        onClick={() => {
+                          if (sortField === col.id) {
+                            setSortDirection(d => (d === 'asc' ? 'desc' : 'asc'));
+                          } else {
+                            setSortField(col.id);
+                            setSortDirection('desc');
+                          }
+                        }}
+                      >
+                        <TableSortLabel
+                          active={sortField === col.id}
+                          direction={sortField === col.id ? sortDirection : 'asc'}
+                          style={{ color: '#fff' }}
+                        >
+                          {col.label}
+                        </TableSortLabel>
+                      </TableCell>
+                    ))}
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {filteredAndSortedResults.map((result, index) => {
+                    const badge = getRecommendationBadge(result.recommendation, result.suggestedService);
+                    const confidencePct = Math.round(result.confidence * 100);
+                    const isExpanded = expandedRow === index;
+
+                    return (
+                      <React.Fragment key={index}>
                         <TableRow
-                          key={index}
-                          className={getRowClassName(
-                            riskLevel as any,
-                            analysis.recommendation === 'relocate' ||
-                              analysis.recommendation === 'extract',
-                            classes,
-                          )}
+                          hover
+                          style={{ cursor: 'pointer' }}
+                          onClick={() => setExpandedRow(isExpanded ? null : index)}
                         >
                           <TableCell>
-                            <Box>
-                              <Typography
-                                variant="body2"
-                                style={{ fontWeight: 500 }}
-                              >
-                                {analysis.functionName}
-                              </Typography>
-                              {analysis.isSharedUtility && (
-                                <Typography
-                                  variant="caption"
-                                  color="textSecondary"
-                                >
-                                  shared utility
-                                </Typography>
-                              )}
-                            </Box>
-                          </TableCell>
-                          <TableCell>{analysis.currentService}</TableCell>
-                          <TableCell>
-                            <Chip
-                              icon={
-                                service?.source === 'catalog' ? (
-                                  <CloudQueueIcon />
-                                ) : (
-                                  <StorageIcon />
-                                )
-                              }
-                              label={service?.source || 'trace'}
-                              size="small"
-                              className={classes.serviceSourceChip}
-                            />
+                            <IconButton size="small">
+                              <ExpandMoreIcon
+                                style={{
+                                  transform: isExpanded ? 'rotate(180deg)' : 'none',
+                                  transition: '0.2s',
+                                }}
+                              />
+                            </IconButton>
                           </TableCell>
                           <TableCell>
-                            {internalPerc.toFixed(1)}% ({analysis.internalCalls}
-                            )
+                            <Typography variant="body2" style={{ fontWeight: 500 }}>
+                              {result.functionName}
+                            </Typography>
                           </TableCell>
+                          <TableCell>{result.currentService}</TableCell>
                           <TableCell>
-                            {externalPerc.toFixed(1)}% ({analysis.externalCalls}
-                            )
+                            <Typography variant="caption" color="textSecondary">
+                              {result.codeLocation?.displayPath || '\u2014'}
+                            </Typography>
                           </TableCell>
                           <TableCell>
                             <Chip
-                              label={riskLevel}
-                              color={getChipColor(riskLevel as any)}
+                              label={result.riskLevel}
                               size="small"
+                              style={{
+                                backgroundColor: getRiskColor(result.riskLevel),
+                                color: '#fff',
+                                fontWeight: 'bold',
+                              }}
                             />
                           </TableCell>
                           <TableCell>
-                            <Box
-                              display="flex"
-                              alignItems="center"
-                              style={{ gap: 6 }}
-                            >
-                              <Typography variant="body2">
-                                {recLabel}
-                              </Typography>
-                              {analysis.circularRisk && (
-                                <CancelIcon
-                                  fontSize="small"
-                                  style={{ color: '#f44336' }}
-                                  titleAccess="Circular dependency risk"
-                                />
-                              )}
-                            </Box>
+                            <Chip
+                              label={badge.label}
+                              size="small"
+                              style={{
+                                backgroundColor: badge.bg,
+                                color: badge.color,
+                                fontWeight: 500,
+                              }}
+                            />
                           </TableCell>
                           <TableCell>
-                            {analysis.suggestedService ||
-                              (analysis.recommendation === 'extract'
-                                ? '(new shared service)'
-                                : 'N/A')}
+                            {result.suggestedService ||
+                              (result.recommendation === 'extract' ? '(shared service)' : '\u2014')}
                           </TableCell>
                           <TableCell>
-                            {analysis.predictedLatencyImprovement
-                              ? `${analysis.predictedLatencyImprovement.toFixed(
-                                  2,
-                                )} ms`
-                              : '—'}
-                          </TableCell>
-                          <TableCell>
-                            <Box
-                              title={`${confidencePct}% confidence (${
-                                analysis.internalCalls + analysis.externalCalls
-                              } samples)`}
-                            >
+                            <Box display="flex" alignItems="center" style={{ gap: 4 }}>
+                              <LinearProgress
+                                variant="determinate"
+                                value={confidencePct}
+                                style={{ width: 60, height: 6, borderRadius: 3 }}
+                              />
                               <Typography
                                 variant="caption"
-                                color={
-                                  confidencePct < 50 ? 'error' : 'textSecondary'
-                                }
+                                color={confidencePct < 50 ? 'error' : 'textSecondary'}
                               >
                                 {confidencePct}%
                               </Typography>
                             </Box>
                           </TableCell>
                           <TableCell>
-                            <Typography
-                              variant="caption"
-                              style={{
-                                color:
-                                  cohesionDelta > 0 ? '#4caf50' : '#f44336',
-                              }}
-                            >
-                              {cohesionDelta > 0
-                                ? `+${cohesionDelta.toFixed(3)}`
-                                : cohesionDelta.toFixed(3)}
-                            </Typography>
+                            {result.predictedLatencyImprovement > 0
+                              ? `${result.predictedLatencyImprovement.toFixed(1)}ms`
+                              : '\u2014'}
+                          </TableCell>
+                          <TableCell>
+                            <Tooltip title={`Priority: ${(result.priorityScore * 100).toFixed(0)}%`}>
+                              <Typography variant="body2" style={{ fontWeight: 'bold' }}>
+                                {result.priorityScore.toFixed(3)}
+                              </Typography>
+                            </Tooltip>
                           </TableCell>
                         </TableRow>
-                      );
-                    })
-                  ) : (
+
+                        {/* Expanded detail panel */}
+                        {isExpanded && (
+                          <TableRow>
+                            <TableCell colSpan={10} style={{ backgroundColor: '#fafafa', padding: 24 }}>
+                              <Grid container spacing={3}>
+                                <Grid item xs={12} md={6}>
+                                  <Typography variant="subtitle2" gutterBottom>
+                                    Code Location
+                                  </Typography>
+                                  {result.codeLocation ? (
+                                    <Box>
+                                      <Typography variant="body2">File: {result.codeLocation.file}</Typography>
+                                      {result.codeLocation.className && (
+                                        <Typography variant="body2">
+                                          Class: {result.codeLocation.className}
+                                        </Typography>
+                                      )}
+                                      {result.codeLocation.lineStart && (
+                                        <Typography variant="body2">
+                                          Line: {result.codeLocation.lineStart}
+                                        </Typography>
+                                      )}
+                                    </Box>
+                                  ) : (
+                                    <Typography variant="body2" color="textSecondary">
+                                      Not available
+                                    </Typography>
+                                  )}
+
+                                  <Box mt={2}>
+                                    <Typography variant="subtitle2" gutterBottom>
+                                      Call Breakdown
+                                    </Typography>
+                                    <Box display="flex" alignItems="center" style={{ gap: 8 }}>
+                                      <Box
+                                        style={{
+                                          flex: result.internalCalls,
+                                          backgroundColor: '#4caf50',
+                                          height: 24,
+                                          borderRadius: 4,
+                                          minWidth: 4,
+                                        }}
+                                      />
+                                      <Box
+                                        style={{
+                                          flex: result.externalCalls,
+                                          backgroundColor: '#f44336',
+                                          height: 24,
+                                          borderRadius: 4,
+                                          minWidth: 4,
+                                        }}
+                                      />
+                                    </Box>
+                                    <Box display="flex" justifyContent="space-between" mt={0.5}>
+                                      <Typography variant="caption">Internal: {result.internalCalls}</Typography>
+                                      <Typography variant="caption">External: {result.externalCalls}</Typography>
+                                    </Box>
+                                  </Box>
+                                </Grid>
+                                <Grid item xs={12} md={6}>
+                                  <Typography variant="subtitle2" gutterBottom>
+                                    Metrics
+                                  </Typography>
+                                  <Typography variant="body2">
+                                    Cohesion Delta: {result.cohesionDelta > 0 ? '+' : ''}
+                                    {result.cohesionDelta.toFixed(3)}
+                                  </Typography>
+                                  <Typography variant="body2">
+                                    Pattern Stability: {(result.patternStability * 100).toFixed(0)}%
+                                  </Typography>
+                                  <Typography variant="body2">Static Coverage: {result.staticCoverage}</Typography>
+                                  {result.coLocationGroup && result.coLocationGroup.length > 0 && (
+                                    <Box mt={1}>
+                                      <Typography variant="body2">
+                                        Co-located with: {result.coLocationGroup.join(', ')}
+                                      </Typography>
+                                      {result.coLocationAction && (
+                                        <Chip
+                                          label={result.coLocationAction}
+                                          size="small"
+                                          variant="outlined"
+                                          style={{ marginTop: 4 }}
+                                        />
+                                      )}
+                                    </Box>
+                                  )}
+
+                                  <Box
+                                    mt={2}
+                                    p={2}
+                                    style={{
+                                      backgroundColor: '#e8f5e9',
+                                      borderRadius: 8,
+                                      borderLeft: '4px solid #4caf50',
+                                    }}
+                                  >
+                                    <Typography variant="subtitle2" gutterBottom>
+                                      Analysis
+                                    </Typography>
+                                    <Typography variant="body2">{generateExplanation(result)}</Typography>
+                                  </Box>
+                                </Grid>
+                              </Grid>
+                            </TableCell>
+                          </TableRow>
+                        )}
+                      </React.Fragment>
+                    );
+                  })}
+                  {filteredAndSortedResults.length === 0 && (
                     <TableRow>
-                      <TableCell
-                        colSpan={11}
-                        style={{ textAlign: 'center', padding: '40px' }}
-                      >
+                      <TableCell colSpan={10} style={{ textAlign: 'center', padding: 40 }}>
                         <Typography color="textSecondary">
-                          {(() => {
-                            const subject = selectedService.startsWith(
-                              'system:',
-                            )
-                              ? 'system'
-                              : 'service';
-                            if (loading) return '⏳ Loading analysis data...';
-                            if (backendAnalysis.length > 0)
-                              return `⚠️ No analysis data for the selected ${subject}. Try selecting a different service or running traces first.`;
-                            return '⚠️ No function placement data yet. Run group tracing first, then click Refresh.';
-                          })()}
+                          {results.length === 0
+                            ? 'No analysis results yet. Start by entering a repository URL above.'
+                            : 'No results match the current filters.'}
                         </Typography>
                       </TableCell>
                     </TableRow>
@@ -1975,58 +807,8 @@ export const FunctionAnalyticsPage = () => {
                 </TableBody>
               </Table>
             </TableContainer>
-          </TabPanel>
-        </Paper>
-
-        {/* Dialogs */}
-        <ConfigurationDialog
-          open={showConfigDialog}
-          onClose={() => setShowConfigDialog(false)}
-          catalogServices={catalogServices}
-          manualServices={manualServices}
-          tracingBackends={tracingBackends}
-          catalogServiceCount={catalogServiceCount}
-          manualServiceCount={manualServiceCount}
-          onRemoveManualService={handleRemoveManualService}
-          onAddServiceClick={() => {
-            setShowConfigDialog(false);
-            setShowAddServiceDialog(true);
-          }}
-          onApplyChanges={() => {
-            setShowConfigDialog(false);
-            window.location.reload();
-          }}
-          onRegisterRepo={async (url: string) => {
-            try {
-              const res = await fetchApi.fetch(
-                '/api/function-analytics/microservice/detect',
-                {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ repoUrl: url }),
-                },
-              );
-              if (!res.ok) {
-                throw new Error(
-                  `Failed to register repository: ${res.statusText}`,
-                );
-              }
-              window.location.reload();
-            } catch (err) {
-              // eslint-disable-next-line no-console
-              console.error('Registration failed:', err);
-              setError('Failed to register repository');
-              setShowConfigDialog(false);
-            }
-          }}
-        />
-
-        <AddServiceDialog
-          open={showAddServiceDialog}
-          onClose={() => setShowAddServiceDialog(false)}
-          onAddService={handleAddManualService}
-          selectedBackend={selectedBackend}
-        />
+          </Box>
+        )}
       </Content>
     </Page>
   );

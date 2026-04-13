@@ -23,5 +23,22 @@ export interface RelocationResult {
   dominantCaller: string;
   dominantPercent: number;
   predictedLatencyImprovement: number;
-  recommendation: 'relocate' | 'keep' | 'review';
+  recommendation: 'relocate' | 'keep' | 'review' | 'extract';
+  confidence: number;
+  cohesionDelta: number;
+  riskLevel: 'HIGH' | 'MEDIUM' | 'LOW' | 'NONE';
+  isSharedUtility: boolean;
+  circularRisk: boolean;
+  priorityScore: number;
+  patternStability: number;
+  staticCoverage: 'covered' | 'uncovered' | 'unknown';
+  codeLocation?: {
+    file: string;
+    className?: string;
+    lineStart?: number;
+    displayPath: string;
+  };
+  coLocationGroup?: string[];
+  coLocationAction?: 'move-together' | 'extract-shared';
+  callerServices?: Record<string, number>;
 }
