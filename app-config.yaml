@@ -261,6 +261,14 @@ catalog:
 
     # Backstage example entities
     - type: file
+      target: ../../microservices/googlecloudplatform--microservices-demo/catalog-info.yaml
+      rules:
+        - allow: [System, Component, API, Resource]
+    - type: file
+      target: ../../microservices/polyglot-fra-benchmark/catalog-info.yaml
+      rules:
+        - allow: [System, Component, API, Resource]
+    - type: file
       target: ../../microservices/lightweight-otel-demo/catalog-info.yaml
       rules:
         - allow: [System, Component, API, Resource]
