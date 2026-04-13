@@ -230,8 +230,10 @@ export function applyDecisionLogic(
     const internalPercent = totalCalls > 0 ? internalCalls / totalCalls : 0;
     const externalPercent = totalCalls > 0 ? externalCalls / totalCalls : 0;
 
-    // ── Confidence ────────────────────────────────────────────────────────
-    const confidence = Math.min(sampleCount / FULL_CONFIDENCE_SAMPLES, 1.0);
+    // ── Confidence (penalized by volatility) ────────────────────────────
+    const rawConfidence = Math.min(sampleCount / FULL_CONFIDENCE_SAMPLES, 1.0);
+    const patternStability = analysis.patternStability ?? 1.0;
+    const confidence = rawConfidence * patternStability;
 
     // ── Risk level ────────────────────────────────────────────────────────
     const riskLevel = computeRiskLevel(externalPercent);
@@ -291,6 +293,13 @@ export function applyDecisionLogic(
       cohesionDelta,
     );
 
+    // ── Static coverage: uncovered functions with no samples always keep ──
+    const staticCoverage = analysis.staticCoverage ?? 'unknown';
+    if (staticCoverage === 'uncovered' && sampleCount === 0) {
+      recommendation = 'keep';
+      suggestedService = null;
+    }
+
     results.push({
       functionName,
       currentService,
@@ -308,6 +317,8 @@ export function applyDecisionLogic(
       isSharedUtility,
       circularRisk,
       priorityScore: Math.round(priorityScore * 1000) / 1000,
+      patternStability: Math.round(patternStability * 1000) / 1000,
+      staticCoverage,
     });
   }
 

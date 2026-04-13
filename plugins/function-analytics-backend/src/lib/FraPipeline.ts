@@ -23,10 +23,13 @@ import {
   FunctionNameResolver,
   SpanProcessor,
 } from './providers';
-import { FunctionAnalysis, RelocationResult } from './types';
+import { FunctionAnalysis, RelocationResult, ServiceFunctionRegistry } from './types';
 import { ProviderRegistry } from './ProviderRegistry';
 import { FraConfig } from '../modules/config/FraConfig';
 import { applyDecisionLogic } from '../modules/analysis/RelocationDecisionEngine';
+import { analyzeVolatility } from '../modules/analysis/VolatilityAnalyzer';
+import { detectCoLocatedGroups } from '../modules/analysis/CoLocationAnalyzer';
+import { augmentWithStaticCoverage } from '../modules/analysis/StaticCoverageAugmenter';
 
 // ─── Minimum observations required to emit a result ────────────────────────
 const MIN_SAMPLE_THRESHOLD = 5;
@@ -184,6 +187,8 @@ export class CohesionAnalyzer implements AnalysisStrategy {
         p99ExternalLatency: percentile(stats.externalLatencies, 99),
         sampleCount: totalCalls,
         callerServices,
+        patternStability: 1.0,
+        staticCoverage: 'unknown',
       });
     }
 
@@ -214,9 +219,14 @@ export class FraPipeline {
 
   /**
    * Run the full analysis pipeline.
+   * @param query - Trace query parameters.
+   * @param registries - Optional static function registries for coverage analysis.
    * @returns Final relocation recommendations, sorted by priority.
    */
-  async analyze(query: TraceQuery): Promise<RelocationResult[]> {
+  async analyze(
+    query: TraceQuery,
+    registries?: ServiceFunctionRegistry[],
+  ): Promise<RelocationResult[]> {
     // Step 1: Fetch traces
     this.logger.info(
       `[FraPipeline] Fetching traces (service=${query.service || 'all'}, lookback=${query.lookbackHours}h)`,
@@ -229,19 +239,55 @@ export class FraPipeline {
     // Step 2: Process spans through processor chain + resolve function names
     const processedTraces = this.processTraces(rawTraces);
 
-    // Step 3: Analyze
-    const analyzed = await this.registry.analysisStrategy.analyze(
+    // Step 3: Compute volatility before analysis (needs resolved function names)
+    const volatilityMap = analyzeVolatility(processedTraces);
+
+    // Step 4: Analyze
+    let analyzed = await this.registry.analysisStrategy.analyze(
       processedTraces,
       this.config,
     );
+
+    // Step 5: Attach pattern stability from volatility analysis
+    analyzed = analyzed.map(fa => {
+      const key = `${fa.currentService}::${fa.functionName}`;
+      const vol = volatilityMap.get(key);
+      if (vol) {
+        const stability = 1 - Math.min(vol.coefficientOfVariation, 1);
+        return { ...fa, patternStability: Math.round(stability * 1000) / 1000 };
+      }
+      return fa;
+    });
+
+    // Step 6: Augment with static coverage if registries provided
+    if (registries && registries.length > 0) {
+      analyzed = augmentWithStaticCoverage(analyzed, registries);
+    }
+
     this.logger.info(
       `[FraPipeline] Analysis found ${analyzed.length} unique functions`,
     );
 
-    // Step 4: Apply decision logic
+    // Step 7: Apply decision logic
     const decisions = applyDecisionLogic(analyzed, this.config);
+
+    // Step 8: Detect co-located groups and annotate results
+    const coLocationGroups = detectCoLocatedGroups(
+      decisions,
+      processedTraces,
+    );
+    for (const group of coLocationGroups) {
+      for (const fnName of group.functions) {
+        const result = decisions.find(d => d.functionName === fnName);
+        if (result) {
+          result.coLocationGroup = group.functions.filter(f => f !== fnName);
+          result.coLocationAction = group.suggestedAction;
+        }
+      }
+    }
+
     this.logger.info(
-      `[FraPipeline] Generated ${decisions.length} relocation decisions`,
+      `[FraPipeline] Generated ${decisions.length} relocation decisions, ${coLocationGroups.length} co-location groups`,
     );
 
     return decisions;

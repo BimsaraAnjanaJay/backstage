@@ -96,6 +96,25 @@ const DOCKER_TRAFFIC_SERVICE_PATTERNS = [
 // ─── Pre-flight helpers ──────────────────────────────────────────────────────
 
 /**
+ * Returns true if the service name or image matches known database/infra patterns.
+ * Used to deprioritize infra services in fallback logic.
+ */
+function isInfraService(name: string, cfg: any): boolean {
+  const infraPatterns = [
+    'mongo', 'redis', 'postgres', 'mysql', 'rabbitmq', 'kafka',
+    'elasticsearch', 'cassandra', 'zookeeper', 'nats', 'etcd',
+    'prometheus', 'grafana', 'zipkin',
+  ];
+  const suffixPatterns = ['-db', '-cache', '-queue', '-mq', '-store'];
+  const lname = name.toLowerCase();
+  const limage = ((cfg?.image as string) || '').toLowerCase();
+  return (
+    infraPatterns.some(p => lname.includes(p) || limage.includes(p)) ||
+    suffixPatterns.some(s => lname.endsWith(s))
+  );
+}
+
+/**
  * Returns true if the Docker daemon is reachable (docker info succeeds).
  */
 async function isDockerAvailable(): Promise<boolean> {
@@ -818,6 +837,12 @@ export async function createRouter(
       let output = '';
       let errorOutput = '';
 
+      // Remove any lingering /jaeger container so docker compose can create it fresh
+      await new Promise<void>(resolve => {
+        const rm = spawn('docker', ['rm', '-f', 'jaeger'], { shell: true });
+        rm.on('close', () => resolve());
+      });
+
       const dockerCompose = spawn(
         'docker compose',
         [
@@ -1305,17 +1330,39 @@ export async function createRouter(
       }
 
       if (!serviceConfig) {
+        // Prefer non-infra services as fallback; if none found, accept any service with ports
+        let infraFallbackName: string | undefined;
+        let infraFallbackCfg: any;
+
         for (const [name, cfg] of Object.entries(composeData.services || {})) {
           if (name.includes('jaeger') || (cfg as any).image?.includes('jaeger'))
             continue;
-          if ((cfg as any).ports) {
-            serviceConfig = cfg;
-            actualServiceName = name;
-            logger.info(
-              `Service '${serviceName}' not found. Using fallback service '${name}'.`,
-            );
-            break;
+          if (!(cfg as any).ports) continue;
+
+          if (isInfraService(name, cfg)) {
+            // Remember first infra service as last-resort fallback
+            if (!infraFallbackName) {
+              infraFallbackName = name;
+              infraFallbackCfg = cfg;
+            }
+            continue;
           }
+
+          serviceConfig = cfg;
+          actualServiceName = name;
+          logger.info(
+            `Service '${serviceName}' not found. Using fallback service '${name}'.`,
+          );
+          break;
+        }
+
+        // If no non-infra service found, fall back to infra service
+        if (!serviceConfig && infraFallbackName) {
+          serviceConfig = infraFallbackCfg;
+          actualServiceName = infraFallbackName;
+          logger.info(
+            `Service '${serviceName}' not found. Using fallback service '${infraFallbackName}'.`,
+          );
         }
       }
 
@@ -1721,6 +1768,13 @@ export async function createRouter(
       }
 
       logger.info('📦 Starting all containers...');
+
+      // Remove any lingering /jaeger container so docker compose can create it fresh
+      await new Promise<void>(resolve => {
+        const rm = spawn('docker', ['rm', '-f', 'jaeger'], { shell: true });
+        rm.on('close', () => resolve());
+      });
+
       const dockerUp = spawn(
         'docker compose',
         [
@@ -1897,6 +1951,13 @@ export async function createRouter(
       }
 
       logger.info('Starting services with docker-compose...');
+
+      // Remove any lingering /jaeger container so docker compose can create it fresh
+      await new Promise<void>(resolve => {
+        const rm = spawn('docker', ['rm', '-f', 'jaeger'], { shell: true });
+        rm.on('close', () => resolve());
+      });
+
       const dockerUp = spawn(
         'docker compose',
         ['-f', composeFile, 'up', '-d'],

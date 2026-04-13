@@ -413,6 +413,8 @@ export function analyzeFunctionCalls(rawTraces: any[]): FunctionAnalysis[] {
       p99ExternalLatency: percentile(stats.externalLatencies, 99),
       sampleCount: totalCalls,
       callerServices,
+      patternStability: 1.0,
+      staticCoverage: 'unknown',
     });
   }
 

@@ -45,6 +45,10 @@ export interface FunctionAnalysis {
   sampleCount: number;
   /** All external callers and their call counts. Used for bidirectional detection. */
   callerServices: Record<string, number>;
+  /** 1 - min(CV, 1): 0 = highly volatile call pattern, 1 = very stable. */
+  patternStability: number;
+  /** Whether the function was seen in both static analysis and traces. */
+  staticCoverage: 'covered' | 'uncovered' | 'unknown';
 }
 
 /** Risk level assigned based on how strongly a function is misplaced. */
@@ -100,6 +104,18 @@ export interface RelocationResult {
    * Weighted: externalRatio(40%) + latencyPenalty(30%) + confidence(20%) + cohesionDelta(10%)
    */
   priorityScore: number;
+
+  /** 1 - min(CV, 1): 0 = highly volatile call pattern, 1 = very stable. */
+  patternStability: number;
+
+  /** Whether the function was seen in both static analysis and traces. */
+  staticCoverage: 'covered' | 'uncovered' | 'unknown';
+
+  /** Other function names in same co-location group, if any. */
+  coLocationGroup?: string[];
+
+  /** Suggested action for co-located functions. */
+  coLocationAction?: 'move-together' | 'extract-shared';
 }
 
 /**
