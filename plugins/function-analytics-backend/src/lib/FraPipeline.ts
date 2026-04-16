@@ -40,6 +40,28 @@ const FRA_CALLER_SERVICE_TAG = 'fra.caller_service';
 const FRA_INVOCATION_TYPE_TAG = 'fra.invocation_type';
 const FRA_HOST_SERVICE_TAG = 'fra.host_service';
 
+// ─── Standard OTel tags consulted as caller-service fallbacks ──────────────
+const PEER_SERVICE_TAGS = [
+  'peer.service',
+  'network.peer.name',
+  'net.peer.name',
+];
+
+/**
+ * Strip Kubernetes pod-hash suffixes so that replicas of the same Deployment
+ * collapse to a single logical service name.
+ *
+ *   "orders-7d4b9c-xyz12" → "orders"
+ *   "orders-7d4b9c"        → "orders"
+ *   "orders"               → "orders"
+ */
+function stripPodHashSuffix(name: string): string {
+  if (!name) return name;
+  return name
+    .replace(/-[a-f0-9]{6,10}-[a-z0-9]{4,6}$/, '')
+    .replace(/-[a-f0-9]{8,}$/, '');
+}
+
 /**
  * Intermediate per-function statistics built during analysis.
  */
@@ -75,17 +97,35 @@ export class CohesionAnalyzer implements AnalysisStrategy {
         const functionName = span.tags['fra.resolved_function'];
         if (!functionName || functionName === 'unknown_function') continue;
 
-        const serviceName = span.serviceName;
+        const serviceName = stripPodHashSuffix(span.serviceName);
 
         // ── Determine caller service ──────────────────────────────────────
+        // 1. FRA custom tag — only present for FRA-instrumented services.
         let callerService: string = span.tags[FRA_CALLER_SERVICE_TAG] || '';
 
+        // 2. Parent span's service (set by SpanEnricherProcessor by walking
+        //    parentSpanId within the trace). Works for any standard OTel
+        //    instrumentation that propagates trace context.
         if (!callerService || callerService === 'unknown') {
-          // Use enriched parent service tag
           callerService = span.tags['fra.parent_service'] || '';
         }
 
-        // Normalise artificial / test callers
+        // 3. peer.service / net.peer.name — populated by client-side
+        //    auto-instrumentation in many languages.
+        if (!callerService || callerService === 'unknown') {
+          for (const k of PEER_SERVICE_TAGS) {
+            const v = span.tags[k];
+            if (v && v !== serviceName) {
+              callerService = v;
+              break;
+            }
+          }
+        }
+
+        // Normalise pod-hash suffixes so replicas collapse to one caller name.
+        callerService = stripPodHashSuffix(callerService);
+
+        // Treat artificial probes / no-caller cases as external entry points.
         if (
           !callerService ||
           callerService === 'unknown' ||

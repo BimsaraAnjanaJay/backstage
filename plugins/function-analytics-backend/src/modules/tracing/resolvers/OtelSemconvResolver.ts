@@ -35,14 +35,28 @@ const FUNCTION_NAME_TAGS = [
  * Resolves function names from OpenTelemetry semantic convention tags
  * and common framework tags.
  *
- * Extracted from FunctionCallAnalyzer.ts lines 157-161 and
- * frontend utils.ts lines 100-112.
+ * When `code.function` is set together with `code.namespace` (the JVM and
+ * .NET auto-instrumentation populate both), the resolver returns
+ * `Class.method` instead of just `method`, which keeps function identities
+ * unique across services that happen to share method names like `find` or
+ * `update`.
+ *
  * Priority: 2
  */
 export class OtelSemconvResolver implements FunctionNameResolver {
   readonly name = 'OtelSemconvResolver';
 
   resolve(span: NormalizedSpan): string | undefined {
+    const codeFn = span.tags['code.function'];
+    if (codeFn && codeFn !== 'unknown') {
+      const ns = span.tags['code.namespace'];
+      if (ns) {
+        const cls = ns.split('.').filter(Boolean).pop();
+        if (cls) return `${cls}.${codeFn}`;
+      }
+      return codeFn;
+    }
+
     for (const key of FUNCTION_NAME_TAGS) {
       const v = span.tags[key];
       if (v && v !== 'unknown') return v;

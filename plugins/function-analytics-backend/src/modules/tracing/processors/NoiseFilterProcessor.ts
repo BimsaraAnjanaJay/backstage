@@ -49,6 +49,15 @@ const NOISE_PATTERNS: string[] = [
   'corsmiddleware',
   'jsonparser',
   'request handler',
+  // Spring framework internals (auto-instrumentation creates many of these)
+  'org.springframework.',
+  'springframework.',
+  'spring.scheduled',
+  'dispatcherservlet',
+  'requestmappinghandlermapping',
+  // ASP.NET / Kestrel framework noise
+  'microsoft.aspnetcore.',
+  'kestrel.',
   // Low-level I/O and networking
   'fs.',
   'net.',
@@ -56,6 +65,7 @@ const NOISE_PATTERNS: string[] = [
   'dns.lookup',
   'tcp.connect',
   'tcp.',
+  'socket.',
   // Database client libraries (also caught by DbSpanProcessor, but belt-and-suspenders)
   'pg.',
   'mongodb.',
@@ -65,12 +75,38 @@ const NOISE_PATTERNS: string[] = [
   'redis.',
   'amqp.',
   'rabbitmq.',
+  'cassandra.',
+  'elasticsearch.',
   // Infra clients
   'grpc.',
+  'grpc.health.v1.health/check',
+  'grpc.reflection',
   // Spring Boot actuator (from frontend jaegerService.ts)
   '/actuator',
-  // Telemetry pipeline
-  'otlp',
+  '/info',
+  '/env',
+  '/beans',
+  // Service discovery / config polling
+  'eureka.',
+  'consul.',
+  'discovery.',
+  'configserver.',
+  'configservice.',
+  'registry.',
+  // Messaging system polling / housekeeping (keep actual produce/consume,
+  // drop background polls)
+  'kafka.consumer.poll',
+  'kafka.metadata',
+  'kafka.commit',
+  'kafka.heartbeat',
+  // Telemetry self-spans
+  'opentelemetry.',
+  'otel.',
+  'otelcol',
+  // Service mesh sidecars
+  'envoy.',
+  'istio.',
+  'linkerd.',
 ];
 
 /** Exact names that are always noise. */
@@ -113,6 +149,27 @@ const NOISE_EXACT = new Set<string>([
 /** FRA custom tag — if set, the span has an explicit app-level function name. */
 const FRA_FUNCTION_NAME_TAG = 'fra.function_name';
 
+/** OTel HTTP route tags — if set, the span has a framework-resolved endpoint. */
+const HTTP_ROUTE_TAGS = ['http.route', 'url.template'];
+
+/** Health-check style routes that are noise even when http.route is set. */
+const HEALTH_ROUTE_PATTERNS = [
+  '/health',
+  '/healthz',
+  '/ready',
+  '/readyz',
+  '/live',
+  '/livez',
+  '/metrics',
+  '/actuator',
+  '/info',
+];
+
+function isHealthCheckRoute(route: string): boolean {
+  const lower = route.toLowerCase();
+  return HEALTH_ROUTE_PATTERNS.some(p => lower.includes(p));
+}
+
 /**
  * Filters out infrastructure / framework noise spans.
  *
@@ -145,6 +202,14 @@ export class NoiseFilterProcessor implements SpanProcessor {
     // If FRA tag explicitly names the function, always keep the span
     const fraName = span.tags[FRA_FUNCTION_NAME_TAG];
     if (fraName && fraName !== 'unknown') return span;
+
+    // If standard OTel HTTP route is set, keep the span — framework
+    // auto-instrumentation has already identified an application endpoint.
+    // Health-check / metrics routes are still dropped.
+    for (const k of HTTP_ROUTE_TAGS) {
+      const route = span.tags[k];
+      if (route && !isHealthCheckRoute(route)) return span;
+    }
 
     // Check custom allowlist
     if (op && this.customAllowlist.has(op.toLowerCase())) return span;

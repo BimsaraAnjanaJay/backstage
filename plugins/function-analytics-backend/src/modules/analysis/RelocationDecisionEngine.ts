@@ -226,6 +226,13 @@ export function applyDecisionLogic(
       sampleCount,
     } = analysis;
 
+    // Functions found only by static scanning (zero trace coverage) cannot
+    // produce a meaningful recommendation. They appear here because the
+    // StaticCoverageAugmenter inserts them with sampleCount=0, but emitting
+    // them as results pollutes the UI with rows like "HelloController, 0
+    // internal calls" that have no actionable signal.
+    if (sampleCount === 0) continue;
+
     const totalCalls = internalCalls + externalCalls;
     const internalPercent = totalCalls > 0 ? internalCalls / totalCalls : 0;
     const externalPercent = totalCalls > 0 ? externalCalls / totalCalls : 0;

@@ -34,6 +34,7 @@ import { InfraClientSpanProcessor } from '../modules/tracing/processors/InfraCli
 import { SpanEnricherProcessor } from '../modules/tracing/processors/SpanEnricherProcessor';
 import { FraTagResolver } from '../modules/tracing/resolvers/FraTagResolver';
 import { OtelSemconvResolver } from '../modules/tracing/resolvers/OtelSemconvResolver';
+import { HttpRouteResolver } from '../modules/tracing/resolvers/HttpRouteResolver';
 import { ClassMethodResolver } from '../modules/tracing/resolvers/ClassMethodResolver';
 import { UrlPathResolver } from '../modules/tracing/resolvers/UrlPathResolver';
 import { GrpcResolver } from '../modules/tracing/resolvers/GrpcResolver';
@@ -218,6 +219,7 @@ export class ProviderRegistry {
     registry
       .addFunctionNameResolver(new FraTagResolver())
       .addFunctionNameResolver(new OtelSemconvResolver())
+      .addFunctionNameResolver(new HttpRouteResolver())
       .addFunctionNameResolver(new ClassMethodResolver())
       .addFunctionNameResolver(new UrlPathResolver())
       .addFunctionNameResolver(new GrpcResolver());
