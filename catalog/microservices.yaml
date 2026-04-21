@@ -1,0 +1,781 @@
+# apiVersion: backstage.io/v1alpha1
+# kind: System
+# metadata:
+#   name: microservices-platform
+#   description: Microservices Platform with 10+ Services
+#   annotations:
+#     backstage.io/techdocs-ref: dir:.
+# spec:
+#   owner: platform-team
+# ---
+# # API Gateway / Frontend
+# apiVersion: backstage.io/v1alpha1
+# kind: Component
+# metadata:
+#   name: api-gateway
+#   description: Main API Gateway routing requests to microservices
+#   annotations:
+#     jaegertracing.io/service-name: api-gateway
+#     backstage.io/kubernetes-id: api-gateway
+#   tags:
+#     - gateway
+#     - routing
+# spec:
+#   type: service
+#   lifecycle: production
+#   owner: platform-team
+#   system: microservices-platform
+#   providesApis:
+#     - gateway-api
+#   consumesApis:
+#     - user-api
+#     - order-api
+#     - payment-api
+#     - product-api
+#     - inventory-api
+#     - notification-api
+# ---
+# # User Service
+# apiVersion: backstage.io/v1alpha1
+# kind: Component
+# metadata:
+#   name: user-service
+#   description: User management and authentication service
+#   annotations:
+#     jaegertracing.io/service-name: user-service
+#     backstage.io/kubernetes-id: user-service
+#   tags:
+#     - authentication
+#     - users
+# spec:
+#   type: service
+#   lifecycle: production
+#   owner: user-team
+#   system: microservices-platform
+#   providesApis:
+#     - user-api
+#   dependsOn:
+#     - resource:user-database
+#     - resource:redis-cache
+# ---
+# # Order Service
+# apiVersion: backstage.io/v1alpha1
+# kind: Component
+# metadata:
+#   name: order-service
+#   description: Order processing and management service
+#   annotations:
+#     jaegertracing.io/service-name: order-service
+#     backstage.io/kubernetes-id: order-service
+#   tags:
+#     - orders
+#     - business-logic
+# spec:
+#   type: service
+#   lifecycle: production
+#   owner: order-team
+#   system: microservices-platform
+#   providesApis:
+#     - order-api
+#   consumesApis:
+#     - user-api
+#     - payment-api
+#     - inventory-api
+#     - notification-api
+#   dependsOn:
+#     - resource:order-database
+# ---
+# # Payment Service
+# apiVersion: backstage.io/v1alpha1
+# kind: Component
+# metadata:
+#   name: payment-service
+#   description: Payment processing service
+#   annotations:
+#     jaegertracing.io/service-name: payment-service
+#     backstage.io/kubernetes-id: payment-service
+#   tags:
+#     - payments
+#     - financial
+# spec:
+#   type: service
+#   lifecycle: production
+#   owner: payment-team
+#   system: microservices-platform
+#   providesApis:
+#     - payment-api
+#   dependsOn:
+#     - resource:payment-database
+# ---
+# # Product Service
+# apiVersion: backstage.io/v1alpha1
+# kind: Component
+# metadata:
+#   name: product-service
+#   description: Product catalog and management service
+#   annotations:
+#     jaegertracing.io/service-name: product-service
+#     backstage.io/kubernetes-id: product-service
+#   tags:
+#     - products
+#     - catalog
+# spec:
+#   type: service
+#   lifecycle: production
+#   owner: product-team
+#   system: microservices-platform
+#   providesApis:
+#     - product-api
+#   dependsOn:
+#     - resource:product-database
+# ---
+# # Inventory Service
+# apiVersion: backstage.io/v1alpha1
+# kind: Component
+# metadata:
+#   name: inventory-service
+#   description: Inventory management and stock tracking service
+#   annotations:
+#     jaegertracing.io/service-name: inventory-service
+#     backstage.io/kubernetes-id: inventory-service
+#   tags:
+#     - inventory
+#     - stock
+# spec:
+#   type: service
+#   lifecycle: production
+#   owner: inventory-team
+#   system: microservices-platform
+#   providesApis:
+#     - inventory-api
+#   consumesApis:
+#     - product-api
+#   dependsOn:
+#     - resource:inventory-database
+# ---
+# # Notification Service
+# apiVersion: backstage.io/v1alpha1
+# kind: Component
+# metadata:
+#   name: notification-service
+#   description: Email, SMS, and push notification service
+#   annotations:
+#     jaegertracing.io/service-name: notification-service
+#     backstage.io/kubernetes-id: notification-service
+#   tags:
+#     - notifications
+#     - messaging
+# spec:
+#   type: service
+#   lifecycle: production
+#   owner: platform-team
+#   system: microservices-platform
+#   providesApis:
+#     - notification-api
+#   consumesApis:
+#     - user-api
+#   dependsOn:
+#     - resource:message-queue
+# ---
+# # Analytics Service
+# apiVersion: backstage.io/v1alpha1
+# kind: Component
+# metadata:
+#   name: analytics-service
+#   description: Analytics and reporting service
+#   annotations:
+#     jaegertracing.io/service-name: analytics-service
+#     backstage.io/kubernetes-id: analytics-service
+#   tags:
+#     - analytics
+#     - reporting
+# spec:
+#   type: service
+#   lifecycle: production
+#   owner: data-team
+#   system: microservices-platform
+#   providesApis:
+#     - analytics-api
+#   consumesApis:
+#     - user-api
+#     - order-api
+#   dependsOn:
+#     - resource:analytics-database
+# ---
+# # Search Service
+# apiVersion: backstage.io/v1alpha1
+# kind: Component
+# metadata:
+#   name: search-service
+#   description: Search and indexing service
+#   annotations:
+#     jaegertracing.io/service-name: search-service
+#     backstage.io/kubernetes-id: search-service
+#   tags:
+#     - search
+#     - indexing
+# spec:
+#   type: service
+#   lifecycle: production
+#   owner: search-team
+#   system: microservices-platform
+#   providesApis:
+#     - search-api
+#   consumesApis:
+#     - product-api
+#   dependsOn:
+#     - resource:elasticsearch
+# ---
+# # Shipping Service
+# apiVersion: backstage.io/v1alpha1
+# kind: Component
+# metadata:
+#   name: shipping-service
+#   description: Shipping and logistics service
+#   annotations:
+#     jaegertracing.io/service-name: shipping-service
+#     backstage.io/kubernetes-id: shipping-service
+#   tags:
+#     - shipping
+#     - logistics
+# spec:
+#   type: service
+#   lifecycle: production
+#   owner: logistics-team
+#   system: microservices-platform
+#   providesApis:
+#     - shipping-api
+#   consumesApis:
+#     - order-api
+#   dependsOn:
+#     - resource:shipping-database
+# ---
+# # Review Service
+# apiVersion: backstage.io/v1alpha1
+# kind: Component
+# metadata:
+#   name: review-service
+#   description: Product reviews and ratings service
+#   annotations:
+#     jaegertracing.io/service-name: review-service
+#     backstage.io/kubernetes-id: review-service
+#   tags:
+#     - reviews
+#     - ratings
+# spec:
+#   type: service
+#   lifecycle: production
+#   owner: product-team
+#   system: microservices-platform
+#   providesApis:
+#     - review-api
+#   consumesApis:
+#     - user-api
+#     - product-api
+#   dependsOn:
+#     - resource:review-database
+# ---
+# # Cart Service
+# apiVersion: backstage.io/v1alpha1
+# kind: Component
+# metadata:
+#   name: cart-service
+#   description: Shopping cart management service
+#   annotations:
+#     jaegertracing.io/service-name: cart-service
+#     backstage.io/kubernetes-id: cart-service
+#     backstage.io/source-location: url:https://github.com/lumbiniRandika/online-boutique-test/tree/405f7daf4e8da531a7bb7ad5264088b6e8afbc51/src/cartservice
+#   tags:
+#     - cart
+#     - shopping
+# spec:
+#   type: service
+#   lifecycle: production
+#   owner: frontend-team
+#   system: microservices-platform
+#   providesApis:
+#     - cart-api
+#   consumesApis:
+#     - user-api
+#     - product-api
+#     - inventory-api
+#   dependsOn:
+#     - resource:redis-cache
+# ---
+# # Recommendation Service
+# apiVersion: backstage.io/v1alpha1
+# kind: Component
+# metadata:
+#   name: recommendation-service
+#   description: AI-powered product recommendation service
+#   annotations:
+#     jaegertracing.io/service-name: recommendation-service
+#     backstage.io/kubernetes-id: recommendation-service
+#   tags:
+#     - ai
+#     - recommendations
+#     - ml
+# spec:
+#   type: service
+#   lifecycle: production
+#   owner: ai-team
+#   system: microservices-platform
+#   providesApis:
+#     - recommendation-api
+#   consumesApis:
+#     - user-api
+#     - product-api
+#     - order-api
+#   dependsOn:
+#     - resource:ml-database
+# ---
+# # ============== APIs ==============
+# apiVersion: backstage.io/v1alpha1
+# kind: Component
+# metadata:
+#   name: frontend
+#   description: React frontend application
+#   annotations:
+#     backstage.io/techdocs-ref: dir:.
+#   tags:
+#     - frontend
+#     - react
+# spec:
+#   type: website
+#   lifecycle: production
+#   owner: frontend-team
+#   system: microservices-platform
+#   consumesApis:
+#     - user-api
+#     - order-api
+#     - cart-api
+#     - product-api
+# ---
+# # ============== APIs ==============
+# apiVersion: backstage.io/v1alpha1
+# kind: API
+# metadata:
+#   name: gateway-api
+#   description: Main API Gateway endpoints
+# spec:
+#   type: openapi
+#   lifecycle: production
+#   owner: platform-team
+#   system: microservices-platform
+#   definition: |
+#     openapi: 3.0.0
+#     info:
+#       title: API Gateway
+#       version: 1.0.0
+#     paths:
+#       /api/v1/users:
+#         get:
+#           summary: User endpoints proxy
+#       /api/v1/orders:
+#         get:
+#           summary: Order endpoints proxy
+# ---
+# ---
+# apiVersion: backstage.io/v1alpha1
+# kind: API
+# metadata:
+#   name: user-api
+#   description: User management API
+#   labels:
+#     team: user-team
+#   annotations:
+#     backstage.io/source-location: url:https://github.com/example/user-service
+#     backstage.io/techdocs-ref: dir:.
+# spec:
+#   type: openapi
+#   lifecycle: production
+#   owner: user:development/guest
+#   system: user-management
+#   definition: |
+#     openapi: 3.0.0
+#     info:
+#       title: User API
+#       version: 1.0.0
+#     paths:
+#       /users:
+#         get:
+#           summary: Get all users
+#           responses:
+#             '200':
+#               description: List of users
+# ---
+# apiVersion: backstage.io/v1alpha1
+# kind: API
+# metadata:
+#   name: order-api
+#   description: Order management API
+# spec:
+#   type: openapi
+#   lifecycle: production
+#   owner: order-team
+#   system: microservices-platform
+#   definition: |
+#     openapi: 3.0.0
+#     info:
+#       title: Order API
+#       version: 1.0.0
+#     paths:
+#       /orders:
+#         get:
+#           summary: Get all orders
+#         post:
+#           summary: Create new order
+#       /orders/{id}:
+#         get:
+#           summary: Get order by ID
+# ---
+# apiVersion: backstage.io/v1alpha1
+# kind: API
+# metadata:
+#   name: payment-api
+#   description: Payment processing API
+# spec:
+#   type: openapi
+#   lifecycle: production
+#   owner: payment-team
+#   system: microservices-platform
+#   definition: |
+#     openapi: 3.0.0
+#     info:
+#       title: Payment API
+#       version: 1.0.0
+#     paths:
+#       /payments:
+#         post:
+#           summary: Process payment
+#       /payments/{id}:
+#         get:
+#           summary: Get payment status
+# ---
+# apiVersion: backstage.io/v1alpha1
+# kind: API
+# metadata:
+#   name: product-api
+#   description: Product catalog API
+# spec:
+#   type: openapi
+#   lifecycle: production
+#   owner: product-team
+#   system: microservices-platform
+#   definition: |
+#     openapi: 3.0.0
+#     info:
+#       title: Product API
+#       version: 1.0.0
+#     paths:
+#       /products:
+#         get:
+#           summary: Get all products
+#       /products/{id}:
+#         get:
+#           summary: Get product by ID
+# ---
+# apiVersion: backstage.io/v1alpha1
+# kind: API
+# metadata:
+#   name: inventory-api
+#   description: Inventory management API
+# spec:
+#   type: openapi
+#   lifecycle: production
+#   owner: inventory-team
+#   system: microservices-platform
+#   definition: |
+#     openapi: 3.0.0
+#     info:
+#       title: Inventory API
+#       version: 1.0.0
+#     paths:
+#       /inventory/{productId}:
+#         get:
+#           summary: Get inventory for product
+#         put:
+#           summary: Update inventory
+# ---
+# apiVersion: backstage.io/v1alpha1
+# kind: API
+# metadata:
+#   name: notification-api
+#   description: Notification service API
+# spec:
+#   type: openapi
+#   lifecycle: production
+#   owner: platform-team
+#   system: microservices-platform
+#   definition: |
+#     openapi: 3.0.0
+#     info:
+#       title: Notification API
+#       version: 1.0.0
+#     paths:
+#       /notifications:
+#         post:
+#           summary: Send notification
+#       /notifications/{userId}:
+#         get:
+#           summary: Get user notifications
+# ---
+# apiVersion: backstage.io/v1alpha1
+# kind: API
+# metadata:
+#   name: analytics-api
+#   description: Analytics and reporting API
+# spec:
+#   type: openapi
+#   lifecycle: production
+#   owner: data-team
+#   system: microservices-platform
+#   definition: |
+#     openapi: 3.0.0
+#     info:
+#       title: Analytics API
+#       version: 1.0.0
+#     paths:
+#       /analytics/reports:
+#         get:
+#           summary: Get analytics reports
+#       /analytics/metrics:
+#         get:
+#           summary: Get system metrics
+# ---
+# apiVersion: backstage.io/v1alpha1
+# kind: API
+# metadata:
+#   name: search-api
+#   description: Search service API
+# spec:
+#   type: openapi
+#   lifecycle: production
+#   owner: search-team
+#   system: microservices-platform
+#   definition: |
+#     openapi: 3.0.0
+#     info:
+#       title: Search API
+#       version: 1.0.0
+#     paths:
+#       /search:
+#         get:
+#           summary: Search products
+#       /search/suggestions:
+#         get:
+#           summary: Get search suggestions
+# ---
+# apiVersion: backstage.io/v1alpha1
+# kind: API
+# metadata:
+#   name: shipping-api
+#   description: Shipping and logistics API
+# spec:
+#   type: openapi
+#   lifecycle: production
+#   owner: logistics-team
+#   system: microservices-platform
+#   definition: |
+#     openapi: 3.0.0
+#     info:
+#       title: Shipping API
+#       version: 1.0.0
+#     paths:
+#       /shipping/rates:
+#         get:
+#           summary: Get shipping rates
+#       /shipping/track/{id}:
+#         get:
+#           summary: Track shipment
+# ---
+# apiVersion: backstage.io/v1alpha1
+# kind: API
+# metadata:
+#   name: review-api
+#   description: Product reviews API
+# spec:
+#   type: openapi
+#   lifecycle: production
+#   owner: product-team
+#   system: microservices-platform
+#   definition: |
+#     openapi: 3.0.0
+#     info:
+#       title: Review API
+#       version: 1.0.0
+#     paths:
+#       /reviews:
+#         post:
+#           summary: Submit review
+#       /reviews/product/{id}:
+#         get:
+#           summary: Get product reviews
+# ---
+# apiVersion: backstage.io/v1alpha1
+# kind: API
+# metadata:
+#   name: cart-api
+#   description: Shopping cart API
+# spec:
+#   type: openapi
+#   lifecycle: production
+#   owner: frontend-team
+#   system: microservices-platform
+#   definition: |
+#     openapi: 3.0.0
+#     info:
+#       title: Cart API
+#       version: 1.0.0
+#     paths:
+#       /cart/{userId}:
+#         get:
+#           summary: Get user cart
+#         post:
+#           summary: Add item to cart
+#         delete:
+#           summary: Remove item from cart
+# ---
+# apiVersion: backstage.io/v1alpha1
+# kind: API
+# metadata:
+#   name: recommendation-api
+#   description: Recommendation service API
+# spec:
+#   type: openapi
+#   lifecycle: production
+#   owner: ai-team
+#   system: microservices-platform
+#   definition: |
+#     openapi: 3.0.0
+#     info:
+#       title: Recommendation API
+#       version: 1.0.0
+#     paths:
+#       /recommendations/{userId}:
+#         get:
+#           summary: Get user recommendations
+#       /recommendations/trending:
+#         get:
+#           summary: Get trending products
+# ---
+# # ============== Resources/Dependencies ==============
+# apiVersion: backstage.io/v1alpha1
+# kind: Resource
+# metadata:
+#   name: user-database
+#   description: User data PostgreSQL database
+# spec:
+#   type: database
+#   owner: user-team
+#   system: microservices-platform
+# ---
+# apiVersion: backstage.io/v1alpha1
+# kind: Resource
+# metadata:
+#   name: order-database
+#   description: Order data PostgreSQL database
+# spec:
+#   type: database
+#   owner: order-team
+#   system: microservices-platform
+# ---
+# apiVersion: backstage.io/v1alpha1
+# kind: Resource
+# metadata:
+#   name: payment-database
+#   description: Payment data PostgreSQL database
+# spec:
+#   type: database
+#   owner: payment-team
+#   system: microservices-platform
+# ---
+# apiVersion: backstage.io/v1alpha1
+# kind: Resource
+# metadata:
+#   name: product-database
+#   description: Product catalog PostgreSQL database
+# spec:
+#   type: database
+#   owner: product-team
+#   system: microservices-platform
+# ---
+# apiVersion: backstage.io/v1alpha1
+# kind: Resource
+# metadata:
+#   name: inventory-database
+#   description: Inventory PostgreSQL database
+# spec:
+#   type: database
+#   owner: inventory-team
+#   system: microservices-platform
+# ---
+# apiVersion: backstage.io/v1alpha1
+# kind: Resource
+# metadata:
+#   name: analytics-database
+#   description: Analytics PostgreSQL database
+# spec:
+#   type: database
+#   owner: data-team
+#   system: microservices-platform
+# ---
+# apiVersion: backstage.io/v1alpha1
+# kind: Resource
+# metadata:
+#   name: shipping-database
+#   description: Shipping PostgreSQL database
+# spec:
+#   type: database
+#   owner: logistics-team
+#   system: microservices-platform
+# ---
+# apiVersion: backstage.io/v1alpha1
+# kind: Resource
+# metadata:
+#   name: review-database
+#   description: Reviews PostgreSQL database
+# spec:
+#   type: database
+#   owner: product-team
+#   system: microservices-platform
+# ---
+# apiVersion: backstage.io/v1alpha1
+# kind: Resource
+# metadata:
+#   name: ml-database
+#   description: Machine Learning PostgreSQL database
+# spec:
+#   type: database
+#   owner: ai-team
+#   system: microservices-platform
+# ---
+# apiVersion: backstage.io/v1alpha1
+# kind: Resource
+# metadata:
+#   name: redis-cache
+#   description: Redis cache for session and cart data
+# spec:
+#   type: cache
+#   owner: platform-team
+#   system: microservices-platform
+# ---
+# apiVersion: backstage.io/v1alpha1
+# kind: Resource
+# metadata:
+#   name: message-queue
+#   description: RabbitMQ message queue
+# spec:
+#   type: queue
+#   owner: platform-team
+#   system: microservices-platform
+# ---
+# apiVersion: backstage.io/v1alpha1
+# kind: Resource
+# metadata:
+#   name: elasticsearch
+#   description: Elasticsearch search engine
+# spec:
+#   type: search-engine
+#   owner: search-team
+#   system: microservices-platform

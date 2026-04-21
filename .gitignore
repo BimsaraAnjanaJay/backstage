@@ -187,3 +187,7 @@ tsconfig.typedoc.tmp.json
 
 # Storybook
 dist-storybook/
+
+.venv/
+
+faiss_cache/

@@ -1,0 +1,92 @@
+apiVersion: backstage.io/v1alpha1
+kind: System
+metadata:
+  name: ecommerce-test-platform
+  description: E-Commerce Microservices Test Platform for Code Duplication Research
+spec:
+  owner: research-team
+---
+# Inventory Service
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: inventory-service
+  description: Inventory management microservice
+  annotations:
+    backstage.io/source-location: url:https://github.com/Pahasarajayasuriya/ecommerce-microservices-test/tree/main/inventory-service
+  tags:
+    - inventory
+    - research
+spec:
+  type: service
+  lifecycle: experimental
+  owner: research-team
+  system: ecommerce-test-platform
+---
+# Notification Service
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: notification-service
+  description: Notification microservice
+  annotations:
+    backstage.io/source-location: url:https://github.com/Pahasarajayasuriya/ecommerce-microservices-test/tree/main/notification-service
+  tags:
+    - notification
+    - research
+spec:
+  type: service
+  lifecycle: experimental
+  owner: research-team
+  system: ecommerce-test-platform
+---
+# Order Service
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: order-service
+  description: Order processing microservice
+  annotations:
+    backstage.io/source-location: url:https://github.com/Pahasarajayasuriya/ecommerce-microservices-test/tree/main/order-service
+  tags:
+    - orders
+    - research
+spec:
+  type: service
+  lifecycle: experimental
+  owner: research-team
+  system: ecommerce-test-platform
+---
+# Payment Service
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: payment-service
+  description: Payment processing microservice
+  annotations:
+    backstage.io/source-location: url:https://github.com/Pahasarajayasuriya/ecommerce-microservices-test/tree/main/payment-service
+  tags:
+    - payments
+    - research
+spec:
+  type: service
+  lifecycle: experimental
+  owner: research-team
+  system: ecommerce-test-platform
+---
+# User Service
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: user-service
+  description: User management microservice
+  annotations:
+    backstage.io/source-location: url:https://github.com/Pahasarajayasuriya/ecommerce-microservices-test/tree/main/user-service
+  tags:
+    - users
+    - research
+spec:
+  type: service
+  lifecycle: experimental
+  owner: research-team
+  system: ecommerce-test-platform

@@ -1,0 +1,269 @@
+apiVersion: backstage.io/v1alpha1
+kind: System
+metadata:
+  name: opentelemetry-astronomy-shop
+  title: OpenTelemetry Astronomy Shop
+  description: Multi-language microservices demo with distributed tracing
+  annotations:
+    jaeger.io/service-name: astronomy-shop
+    jaeger.io/endpoint: http://localhost:32771
+spec:
+  owner: platform-team
+  domain: ecommerce
+---
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: otel-frontend
+  title: OpenTelemetry Frontend Service
+  description: Node.js/TypeScript frontend application (OpenTelemetry Demo)
+  annotations:
+    jaeger.io/service-name: frontend
+    jaeger.io/endpoint: http://localhost:32771
+    backstage.io/techdocs-ref: dir:.
+spec:
+  type: service
+  lifecycle: production
+  owner: frontend-team
+  system: opentelemetry-astronomy-shop
+  providesApis:
+    - frontend-api
+  dependsOn:
+    - component:otel-checkout
+    - component:otel-cart
+    - component:otel-product-catalog
+    - component:otel-recommendation
+---
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: otel-checkout
+  title: OpenTelemetry Checkout Service
+  description: Go-based checkout service with function-level tracing
+  annotations:
+    jaeger.io/service-name: checkout
+    jaeger.io/endpoint: http://localhost:32771
+    github.com/project-slug: open-telemetry/opentelemetry-demo
+spec:
+  type: service
+  lifecycle: production
+  owner: checkout-team
+  system: opentelemetry-astronomy-shop
+  providesApis:
+    - checkout-api
+  dependsOn:
+    - component:otel-cart
+    - component:otel-product-catalog
+    - component:otel-currency
+    - component:otel-shipping
+    - component:otel-payment
+---
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: otel-cart
+  title: OpenTelemetry Cart Service
+  description: Go-based cart service with Redis backend
+  annotations:
+    jaeger.io/service-name: cart
+    jaeger.io/endpoint: http://localhost:32771
+spec:
+  type: service
+  lifecycle: production
+  owner: cart-team
+  system: opentelemetry-astronomy-shop
+  providesApis:
+    - cart-api
+  dependsOn:
+    - resource:valkey-cart
+---
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: otel-product-catalog
+  title: OpenTelemetry Product Catalog Service
+  description: Go-based product catalog service
+  annotations:
+    jaeger.io/service-name: product-catalog
+    jaeger.io/endpoint: http://localhost:32771
+spec:
+  type: service
+  lifecycle: production
+  owner: catalog-team
+  system: opentelemetry-astronomy-shop
+  providesApis:
+    - product-catalog-api
+---
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: otel-recommendation
+  title: OpenTelemetry Recommendation Service
+  description: Python-based ML recommendation service
+  annotations:
+    jaeger.io/service-name: recommendation
+    jaeger.io/endpoint: http://localhost:32771
+spec:
+  type: service
+  lifecycle: production
+  owner: ml-team
+  system: opentelemetry-astronomy-shop
+  providesApis:
+    - recommendation-api
+  dependsOn:
+    - component:otel-product-catalog
+---
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: otel-shipping
+  title: OpenTelemetry Shipping Service
+  description: Rust-based shipping calculation service
+  annotations:
+    jaeger.io/service-name: shipping
+    jaeger.io/endpoint: http://localhost:32771
+spec:
+  type: service
+  lifecycle: production
+  owner: logistics-team
+  system: opentelemetry-astronomy-shop
+  providesApis:
+    - shipping-api
+  dependsOn:
+    - component:otel-quote
+---
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: otel-payment
+  title: OpenTelemetry Payment Service
+  description: Node.js-based payment processing service
+  annotations:
+    jaeger.io/service-name: payment
+    jaeger.io/endpoint: http://localhost:32771
+spec:
+  type: service
+  lifecycle: production
+  owner: payments-team
+  system: opentelemetry-astronomy-shop
+  providesApis:
+    - payment-api
+---
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: otel-currency
+  title: OpenTelemetry Currency Service
+  description: C#/.NET-based currency conversion service
+  annotations:
+    jaeger.io/service-name: currency
+    jaeger.io/endpoint: http://localhost:32771
+spec:
+  type: service
+  lifecycle: production
+  owner: finance-team
+  system: opentelemetry-astronomy-shop
+  providesApis:
+    - currency-api
+---
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: otel-ad
+  title: OpenTelemetry Ad Service
+  description: Java-based advertisement service
+  annotations:
+    jaeger.io/service-name: ad
+    jaeger.io/endpoint: http://localhost:32771
+spec:
+  type: service
+  lifecycle: production
+  owner: marketing-team
+  system: opentelemetry-astronomy-shop
+  providesApis:
+    - ad-api
+---
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: otel-email
+  title: OpenTelemetry Email Service
+  description: Ruby-based email notification service
+  annotations:
+    jaeger.io/service-name: email
+    jaeger.io/endpoint: http://localhost:32771
+spec:
+  type: service
+  lifecycle: production
+  owner: communications-team
+  system: opentelemetry-astronomy-shop
+  providesApis:
+    - email-api
+---
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: otel-quote
+  title: OpenTelemetry Quote Service
+  description: PHP-based shipping quote service
+  annotations:
+    jaeger.io/service-name: quote
+    jaeger.io/endpoint: http://localhost:32771
+spec:
+  type: service
+  lifecycle: production
+  owner: logistics-team
+  system: opentelemetry-astronomy-shop
+  providesApis:
+    - quote-api
+---
+apiVersion: backstage.io/v1alpha1
+kind: Resource
+metadata:
+  name: valkey-cart
+  title: Cart Database
+  description: Valkey/Redis database for cart storage
+spec:
+  type: database
+  owner: platform-team
+  system: opentelemetry-astronomy-shop
+---
+apiVersion: backstage.io/v1alpha1
+kind: Resource
+metadata:
+  name: jaeger-tracing
+  title: Jaeger Distributed Tracing
+  description: Jaeger instance for distributed tracing collection and visualization
+  annotations:
+    jaeger.io/endpoint: http://localhost:32771
+spec:
+  type: tracing
+  owner: platform-team
+  system: opentelemetry-astronomy-shop
+---
+apiVersion: backstage.io/v1alpha1
+kind: API
+metadata:
+  name: frontend-api
+  title: Frontend API
+  description: REST API for the frontend application
+spec:
+  type: openapi
+  lifecycle: production
+  owner: frontend-team
+  system: opentelemetry-astronomy-shop
+  definition: |
+    openapi: 3.0.0
+    info:
+      title: Frontend API
+      version: 1.0.0
+    paths:
+      /api/products:
+        get:
+          summary: Get all products
+      /api/cart:
+        post:
+          summary: Add item to cart
+      /api/checkout:
+        post:
+          summary: Process checkout

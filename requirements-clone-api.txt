@@ -1,0 +1,11 @@
+numpy
+flask
+flask-cors
+torch
+transformers==4.41.0
+tokenizers==0.19.1
+peft==0.10.0
+tree-sitter==0.20.4
+tree-sitter-languages
+safetensors
+faiss-cpu

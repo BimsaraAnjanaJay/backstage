@@ -259,6 +259,19 @@ catalog:
     # File locations are relative to the current working directory of the
     # backend, for example packages/backend/.
 
+    # E-Commerce Test Platform catalog
+    - type: file
+      target: ../../catalog/ecommerce-catalog.yaml
+      rules:
+        - allow: [System, Component, API, Resource]
+
+    # Althea Digital PoC catalog
+    - type: file
+      target: ../../catalog/Althea.yaml
+      rules:
+        - allow: [System, Component, API, Resource]
+
+
     # Backstage example entities
     - type: file
       target: ../../microservices/googlecloudplatform--microservices-demo/catalog-info.yaml

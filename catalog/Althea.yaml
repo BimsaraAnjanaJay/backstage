@@ -1,0 +1,127 @@
+apiVersion: backstage.io/v1alpha1
+kind: System
+metadata:
+  name: althea-digital-poc
+  description: "Althea Digital PoC"
+spec:
+  owner: research-team
+
+---
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: appointment-service
+  annotations:
+    backstage.io/source-location: url:https://github.com/Althea-Digital/Althea_Digital_PoC/tree/develop/services/appointment-service
+  tags:
+    - appointment
+spec:
+  type: service
+  owner: research-team
+  lifecycle: experimental
+  system: althea-digital-poc
+
+---
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: auth-service
+  annotations:
+    backstage.io/source-location: url:https://github.com/Althea-Digital/Althea_Digital_PoC/tree/develop/services/auth-service
+  tags:
+    - auth
+spec:
+  type: service
+  owner: research-team
+  lifecycle: experimental
+  system: althea-digital-poc
+
+---
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: billing-service
+  annotations:
+    backstage.io/source-location: url:https://github.com/Althea-Digital/Althea_Digital_PoC/tree/develop/services/billing-service
+  tags:
+    - billing
+spec:
+  type: service
+  owner: research-team
+  lifecycle: experimental
+  system: althea-digital-poc
+
+---
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: consultation-service
+  annotations:
+    backstage.io/source-location: url:https://github.com/Althea-Digital/Althea_Digital_PoC/tree/develop/services/consultation-service
+  tags:
+    - consultation
+spec:
+  type: service
+  owner: research-team
+  lifecycle: experimental
+  system: althea-digital-poc
+
+---
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: invitation-service
+  annotations:
+    backstage.io/source-location: url:https://github.com/Althea-Digital/Althea_Digital_PoC/tree/develop/services/invitation-service
+  tags:
+    - invitation
+spec:
+  type: service
+  owner: research-team
+  lifecycle: experimental
+  system: althea-digital-poc
+
+---
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: althea-notification-service
+  annotations:
+    backstage.io/source-location: url:https://github.com/Althea-Digital/Althea_Digital_PoC/tree/develop/services/notification-service
+  tags:
+    - notification
+spec:
+  type: service
+  owner: research-team
+  lifecycle: experimental
+  system: althea-digital-poc
+
+---
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: registration-service
+  annotations:
+    backstage.io/source-location: url:https://github.com/Althea-Digital/Althea_Digital_PoC/tree/develop/services/registration-service
+  tags:
+    - registration
+spec:
+  type: service
+  owner: research-team
+  lifecycle: experimental
+  system: althea-digital-poc
+
+---
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: scheduling-service
+  annotations:
+    backstage.io/source-location: url:https://github.com/Althea-Digital/Althea_Digital_PoC/tree/develop/services/scheduling-service
+  tags:
+    - scheduling
+spec:
+  type: service
+  owner: research-team
+  lifecycle: experimental
+  system: althea-digital-poc

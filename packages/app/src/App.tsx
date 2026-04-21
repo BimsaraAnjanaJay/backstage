@@ -75,6 +75,7 @@ import { CustomizableHomePage } from './components/home/CustomizableHomePage';
 import { HomePage } from './components/home/HomePage';
 import { BuiThemerPage } from '@backstage/plugin-mui-to-bui';
 import { FunctionAnalyticsPage } from '@internal/plugin-function-analytics';
+import { CodeAnalysisPage } from '@internal/plugin-code-analysis';
 
 const app = createApp({
   apis,
@@ -212,6 +213,8 @@ const routes = (
     <Route path="/notifications" element={<NotificationsPage />} />
     <Route path="/mui-to-bui" element={<BuiThemerPage />} />
     <Route path="/function-analytics" element={<FunctionAnalyticsPage />} />
+    <Route path="/code-analysis" element={<CodeAnalysisPage />} />
+    
   </FlatRoutes>
 );
 

@@ -22,6 +22,7 @@ import SearchIcon from '@material-ui/icons/Search';
 import MenuIcon from '@material-ui/icons/Menu';
 import LogoFull from './LogoFull';
 import LogoIcon from './LogoIcon';
+import AnalyticsIcon from '@material-ui/icons/Timeline';
 import {
   Settings as SidebarSettings,
   UserSettingsSignInAvatar,
@@ -150,6 +151,9 @@ export const Root = ({ children }: PropsWithChildren<{}>) => (
         <SidebarItem icon={CreateComponentIcon} to="create" text="Create..." />
         {/* End global nav */}
         <SidebarDivider />
+        
+        <SidebarItem icon={AnalyticsIcon} to="code-analysis" text="Code Analysis" />
+
         <SidebarItem
           icon={AssessmentIcon}
           to="function-analytics"
