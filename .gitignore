@@ -191,3 +191,5 @@ dist-storybook/
 .venv/
 
 faiss_cache/
+__pycache__/
+*.pyc
