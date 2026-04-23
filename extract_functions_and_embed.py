@@ -113,7 +113,6 @@ IGNORE_DIRS = {
 # gRPC stubs; they are identical across services and produce thousands of
 # false-positive clone pairs.
 IGNORE_FILES = {
-    "demo_pb2.py", "demo_pb2_grpc.py",   # protobuf auto-generated (Python gRPC)
 }
 
 EXTENSION_TO_LANG = {

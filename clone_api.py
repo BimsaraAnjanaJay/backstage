@@ -53,7 +53,7 @@ from extract_functions_and_embed import (
     CODE_LENGTH,
     DATA_FLOW_LENGTH,
     MIN_STUB_TOKENS,
-    IGNORE_FILES,          # keep original ignore list
+    IGNORE_FILES,
     EXTENSION_TO_LANG,
 )
 
@@ -63,6 +63,8 @@ FAISS_CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fais
 os.makedirs(FAISS_CACHE_DIR, exist_ok=True)
 
 PIPELINE_VERSION = "v4_minimal_realworld_skip_only"
+
+# clone_api.py
 
 EXTRA_IGNORE_FILENAMES = {
     # generated / stubs
@@ -229,6 +231,69 @@ def is_infrastructure_file(path: str) -> bool:
     ]
     return any(k in p for k in keywords)
 
+def is_entry_point(fn_name: str, code: str, filename: str, lang: str) -> bool:
+    code_lower = code.lower()
+    file_lower = filename.lower()
+
+    # ── Java (Spring Boot main) ─────────────────────────────
+    if lang == "java":
+        if fn_name == "main" and "springapplication.run" in code_lower:
+            return True
+
+    # ── Python (__main__ or simple main wrapper) ────────────
+    if lang == "python":
+        if "__name__" in code_lower and "__main__" in code_lower:
+            return True
+        if fn_name == "main" and len(code.splitlines()) <= 5:
+            return True
+
+    # ── JavaScript / TypeScript (server bootstrap) ──────────
+    if lang in ["javascript", "typescript"]:
+        if "listen(" in code_lower and ("app." in code_lower or "server." in code_lower):
+            return True
+
+    return False
+
+def is_constructor(fn_name: str, code: str, filename: str, lang: str) -> bool:
+    code_stripped = code.strip()
+    header = code_stripped.split("{", 1)[0].strip()
+    code_lower = code_stripped.lower()
+
+    # ── Java ─────────────────────────────────────────────
+    if lang == "java":
+        if fn_name == "<anonymous>":
+            return False
+
+        prefixes = [
+            f"public {fn_name}(",
+            f"private {fn_name}(",
+            f"protected {fn_name}(",
+            f"{fn_name}(",
+        ]
+        return any(header.startswith(p) for p in prefixes)
+
+    # ── JavaScript / TypeScript ──────────────────────────
+    if lang in ["javascript", "typescript"]:
+        # class constructor()
+        if fn_name == "constructor":
+            return True
+
+        # also catch class constructor syntax
+        if "constructor(" in code_lower:
+            return True
+
+        return False
+
+    # ── Python ───────────────────────────────────────────
+    if lang == "python":
+        # __init__ method
+        if fn_name == "__init__":
+            return True
+
+        return False
+
+    return False
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  PIPELINE
@@ -243,8 +308,8 @@ def process_services(services_input: list, shared_files: set) -> tuple:
 
     for svc_entry in services_input:
         service_name = svc_entry.get("service", "unknown")
-        log.info(f"\n--- Handling Service: {service_name} ---")
         files = svc_entry.get("files", [])
+        log.info(f"--- Handling Service: {service_name} ({len(files)} files) ---")
 
         content_hash = compute_service_content_hash(files)
 
@@ -301,6 +366,14 @@ def process_services(services_input: list, shared_files: set) -> tuple:
                         continue
 
                     if fn_name == "<anonymous>" and is_infrastructure_file(filename):
+                        continue
+
+                    if is_entry_point(fn_name, fn_code, filename, lang):
+                        log.info(f"  [SKIP entry-point] {service_name}/{filename}::{fn_name}")
+                        continue
+
+                    if is_constructor(fn_name, fn_code, filename, lang):
+                        log.info(f"  [SKIP constructor] {service_name}/{filename}::{fn_name}")
                         continue
                 except Exception as e:
                     log.warning(f"  SKIP DFG {fn_name}: {e}")
@@ -481,7 +554,7 @@ def build_clone_report(records: list, indices: dict, threshold: float) -> dict:
         },
         "summary": {
             "services_analysed": len(indices),
-            "service_names": service_names,
+            "service_names": list(indices.keys()),
             "functions_processed": len(records),
             "functions_sliced": sum(1 for r in records if r.get("sliced", False)),
             "cross_service_pairs": len(all_pairs),
@@ -600,6 +673,7 @@ def detect_clones():
     )
 
     try:
+        # shared_files = detect_shared_files(services_input)
         records, indices = process_services(services_input, set())
         report = build_clone_report(records, indices, threshold)
     except Exception as e:
@@ -610,7 +684,8 @@ def detect_clones():
         "processing_time_sec": round(time.time() - t0, 2),
     }
     log.info(
-        f"Done — {report['summary']['functions_processed']} functions, "
+        f"Done — {report['summary']['services_analysed']} service(s), "
+        f"{report['summary']['functions_processed']} function(s), "
         f"{report['summary']['clones_detected']} clone(s) "
         f"in {report['meta']['processing_time_sec']}s"
     )
