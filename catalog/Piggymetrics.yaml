@@ -1,0 +1,160 @@
+apiVersion: backstage.io/v1alpha1
+kind: System
+metadata:
+  name: piggymetrics
+  description: PiggyMetrics Microservices System for financial tracking
+spec:
+  owner: research-team
+---
+# Account Service
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: piggymetrics-account-service
+  description: Handles user accounts and profiles
+  annotations:
+    backstage.io/source-location: url:https://github.com/sqshq/piggymetrics/tree/master/account-service
+  tags:
+    - piggymetrics
+    - account
+spec:
+  type: service
+  lifecycle: experimental
+  owner: research-team
+  system: piggymetrics-platform
+---
+# Auth Service
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: piggymetrics-auth-service
+  description: Authentication and authorization service
+  annotations:
+    backstage.io/source-location: url:https://github.com/sqshq/piggymetrics/tree/master/auth-service
+  tags:
+    - piggymetrics
+    - auth
+spec:
+  type: service
+  lifecycle: experimental
+  owner: research-team
+  system: piggymetrics-platform
+---
+# Statistics Service
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: piggymetrics-statistics-service
+  description: Financial statistics and analytics
+  annotations:
+    backstage.io/source-location: url:https://github.com/sqshq/piggymetrics/tree/master/statistics-service
+  tags:
+    - piggymetrics
+    - analytics
+spec:
+  type: service
+  lifecycle: experimental
+  owner: research-team
+  system: piggymetrics-platform
+---
+# Notification Service
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: piggymetrics-notification-service
+  description: Sends user notifications
+  annotations:
+    backstage.io/source-location: url:https://github.com/sqshq/piggymetrics/tree/master/notification-service
+  tags:
+    - piggymetrics
+    - notification
+spec:
+  type: service
+  lifecycle: experimental
+  owner: research-team
+  system: piggymetrics-platform
+---
+# API Gateway
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: piggymetrics-gateway
+  description: API Gateway for routing requests
+  annotations:
+    backstage.io/source-location: url:https://github.com/sqshq/piggymetrics/tree/master/gateway
+  tags:
+    - piggymetrics
+    - gateway
+spec:
+  type: service
+  lifecycle: experimental
+  owner: research-team
+  system: piggymetrics-platform
+---
+# Config Server
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: piggymetrics-config-service
+  description: Centralized configuration service
+  annotations:
+    backstage.io/source-location: url:https://github.com/sqshq/piggymetrics/tree/master/config
+  tags:
+    - piggymetrics
+    - config
+spec:
+  type: service
+  lifecycle: experimental
+  owner: research-team
+  system: piggymetrics-platform
+---
+# Service Registry
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: piggymetrics-registry
+  description: Service discovery (Eureka)
+  annotations:
+    backstage.io/source-location: url:https://github.com/sqshq/piggymetrics/tree/master/registry
+  tags:
+    - piggymetrics
+    - discovery
+spec:
+  type: service
+  lifecycle: experimental
+  owner: research-team
+  system: piggymetrics-platform
+---
+# Monitoring
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: piggymetrics-monitoring
+  description: Monitoring and metrics service
+  annotations:
+    backstage.io/source-location: url:https://github.com/sqshq/piggymetrics/tree/master/monitoring
+  tags:
+    - piggymetrics
+    - monitoring
+spec:
+  type: service
+  lifecycle: experimental
+  owner: research-team
+  system: piggymetrics-platform
+---
+# turbine-stream-service
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: piggymetrics-turbine-stream-service
+  description: Turbine stream service
+  annotations:
+    backstage.io/source-location: url:https://github.com/sqshq/piggymetrics/tree/master/turbine-stream-service
+  tags:
+    - piggymetrics
+    - turbine-stream
+spec:
+  type: service
+  lifecycle: experimental
+  owner: research-team
+  system: piggymetrics-platform

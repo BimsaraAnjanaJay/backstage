@@ -1,0 +1,205 @@
+apiVersion: backstage.io/v1alpha1
+kind: System
+metadata:
+  name: online-boutique
+  description: Google Online Boutique microservices demo application
+spec:
+  owner: research-team
+---
+# Frontend
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: online-boutique-frontend
+  description: Exposes the web UI and HTTP server
+  annotations:
+    backstage.io/source-location: url:https://github.com/GoogleCloudPlatform/microservices-demo/tree/main/src/frontend
+  tags:
+    - ecommerce
+    - online-boutique
+    - frontend
+spec:
+  type: service
+  lifecycle: experimental
+  owner: research-team
+  system: online-boutique-platform
+---
+# Cart Service
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: online-boutique-cartservice
+  description: Stores and retrieves shopping cart items
+  annotations:
+    backstage.io/source-location: url:https://github.com/GoogleCloudPlatform/microservices-demo/tree/main/src/cartservice
+  tags:
+    - ecommerce
+    - online-boutique
+    - cart
+spec:
+  type: service
+  lifecycle: experimental
+  owner: research-team
+  system: online-boutique-platform
+---
+# Product Catalog Service
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: online-boutique-productcatalogservice
+  description: Provides product list, search, and product details
+  annotations:
+    backstage.io/source-location: url:https://github.com/GoogleCloudPlatform/microservices-demo/tree/main/src/productcatalogservice
+  tags:
+    - ecommerce
+    - online-boutique
+    - catalog
+spec:
+  type: service
+  lifecycle: experimental
+  owner: research-team
+  system: online-boutique-platform
+---
+# Currency Service
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: online-boutique-currencyservice
+  description: Converts money amounts between currencies
+  annotations:
+    backstage.io/source-location: url:https://github.com/GoogleCloudPlatform/microservices-demo/tree/main/src/currencyservice
+  tags:
+    - ecommerce
+    - online-boutique
+    - currency
+spec:
+  type: service
+  lifecycle: experimental
+  owner: research-team
+  system: online-boutique-platform
+---
+# Payment Service
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: online-boutique-paymentservice
+  description: Processes mock payment transactions
+  annotations:
+    backstage.io/source-location: url:https://github.com/GoogleCloudPlatform/microservices-demo/tree/main/src/paymentservice
+  tags:
+    - ecommerce
+    - online-boutique
+    - payment
+spec:
+  type: service
+  lifecycle: experimental
+  owner: research-team
+  system: online-boutique-platform
+---
+# Shipping Service
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: online-boutique-shippingservice
+  description: Calculates shipping costs and handles mock shipping
+  annotations:
+    backstage.io/source-location: url:https://github.com/GoogleCloudPlatform/microservices-demo/tree/main/src/shippingservice
+  tags:
+    - ecommerce
+    - online-boutique
+    - shipping
+spec:
+  type: service
+  lifecycle: experimental
+  owner: research-team
+  system: online-boutique-platform
+---
+# Email Service
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: online-boutique-emailservice
+  description: Sends mock order confirmation emails
+  annotations:
+    backstage.io/source-location: url:https://github.com/GoogleCloudPlatform/microservices-demo/tree/main/src/emailservice
+  tags:
+    - ecommerce
+    - online-boutique
+    - email
+spec:
+  type: service
+  lifecycle: experimental
+  owner: research-team
+  system: online-boutique-platform
+---
+# Checkout Service
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: online-boutique-checkoutservice
+  description: Orchestrates checkout, payment, shipping, and email
+  annotations:
+    backstage.io/source-location: url:https://github.com/GoogleCloudPlatform/microservices-demo/tree/main/src/checkoutservice
+  tags:
+    - ecommerce
+    - online-boutique
+    - checkout
+spec:
+  type: service
+  lifecycle: experimental
+  owner: research-team
+  system: online-boutique-platform
+---
+# Recommendation Service
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: online-boutique-recommendationservice
+  description: Recommends products based on cart contents
+  annotations:
+    backstage.io/source-location: url:https://github.com/GoogleCloudPlatform/microservices-demo/tree/main/src/recommendationservice
+  tags:
+    - ecommerce
+    - online-boutique
+    - recommendation
+spec:
+  type: service
+  lifecycle: experimental
+  owner: research-team
+  system: online-boutique-platform
+---
+# Ad Service
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: online-boutique-adservice
+  description: Provides text ads based on context words
+  annotations:
+    backstage.io/source-location: url:https://github.com/GoogleCloudPlatform/microservices-demo/tree/main/src/adservice
+  tags:
+    - ecommerce
+    - online-boutique
+    - ads
+spec:
+  type: service
+  lifecycle: experimental
+  owner: research-team
+  system: online-boutique-platform
+---
+# Load Generator
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: online-boutique-loadgenerator
+  description: Generates realistic shopping traffic against the frontend
+  annotations:
+    backstage.io/source-location: url:https://github.com/GoogleCloudPlatform/microservices-demo/tree/main/src/loadgenerator
+  tags:
+    - ecommerce
+    - online-boutique
+    - testing
+spec:
+  type: service
+  lifecycle: experimental
+  owner: research-team
+  system: online-boutique-platform

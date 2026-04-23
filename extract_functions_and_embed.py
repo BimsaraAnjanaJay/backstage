@@ -114,9 +114,6 @@ IGNORE_DIRS = {
 # false-positive clone pairs.
 IGNORE_FILES = {
     "demo_pb2.py", "demo_pb2_grpc.py",   # protobuf auto-generated (Python gRPC)
-    "logger.py", "logger.js",             # trivial shared logging boilerplate
-    "client.js", "email_client.py", "client.py",  # gRPC client/test harness
-    "index.js",                           # service entry-point wrapper (no logic)
 }
 
 EXTENSION_TO_LANG = {

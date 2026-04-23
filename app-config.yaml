@@ -265,11 +265,23 @@ catalog:
       rules:
         - allow: [System, Component, API, Resource]
 
-    # Althea Digital PoC catalog
+    # Piggymetrics catalog
     - type: file
-      target: ../../catalog/Althea.yaml
+      target: ../../catalog/Piggymetrics.yaml
       rules:
         - allow: [System, Component, API, Resource]
+
+    # Online Boqueue catalog
+    - type: file
+      target: ../../catalog/Online-boqueue.yaml
+      rules:
+        - allow: [System, Component, API, Resource]
+
+    # Althea Digital PoC catalog
+    # - type: file
+    #   target: ../../catalog/Althea.yaml
+    #   rules:
+    #     - allow: [System, Component, API, Resource]
 
 
     # Backstage example entities

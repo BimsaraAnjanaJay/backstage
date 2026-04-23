@@ -111,6 +111,8 @@ interface GraphNode {
   id: string;
   x: number;
   y: number;
+  vx: number;
+  vy: number;
 }
 
 interface GraphEdge {
@@ -120,25 +122,34 @@ interface GraphEdge {
   count: number;
 }
 
-const buildCloneGraph = (report: CloneReport): { nodes: GraphNode[]; edges: GraphEdge[] } => {
+const buildCloneGraph = (report: CloneReport): { nodes: GraphNode[]; edges: GraphEdge[]; width: number; height: number } => {
   const services = Array.from(
     new Set(report.clone_pairs.flatMap(pair => [pair.service_1, pair.service_2])),
   );
 
-  const width = 700;
-  const height = 340;
-  const radius = Math.min(width, height) / 2 - 80;
-  const centerX = width / 2;
-  const centerY = height / 2;
+  const N = services.length;
+  if (N === 0) return { nodes: [], edges: [], width: 700, height: 340 };
+
+  const nodeW = 160;
+  const nodeH = 60;
+  
+  const areaPerNode = nodeW * nodeH * 10; 
+  const totalArea = Math.max(700 * 340, N * areaPerNode);
+  const canvasWidth = Math.max(700, Math.sqrt(totalArea * 2));
+  const canvasHeight = Math.max(340, canvasWidth / 2);
+  
+  const radius = Math.min(canvasWidth, canvasHeight) / 2 - 80;
+  const centerX = canvasWidth / 2;
+  const centerY = canvasHeight / 2;
 
   const nodes = services.map((service, index) => {
-    const angle = services.length > 0
-      ? (index / services.length) * Math.PI * 2
-      : 0;
+    const angle = N > 0 ? (index / N) * Math.PI * 2 : 0;
     return {
       id: service,
       x: centerX + Math.cos(angle) * radius,
       y: centerY + Math.sin(angle) * radius,
+      vx: 0,
+      vy: 0
     };
   });
 
@@ -161,8 +172,70 @@ const buildCloneGraph = (report: CloneReport): { nodes: GraphNode[]; edges: Grap
       });
     }
   }
+  const edges = Array.from(edgeMap.values());
 
-  return { nodes, edges: Array.from(edgeMap.values()) };
+  const iterations = 150;
+  const k = Math.sqrt((canvasWidth * canvasHeight) / N) * 0.8;
+
+  for (let iter = 0; iter < iterations; iter++) {
+    for (let i = 0; i < N; i++) {
+      nodes[i].vx = 0;
+      nodes[i].vy = 0;
+      for (let j = 0; j < N; j++) {
+        if (i !== j) {
+          let dx = nodes[i].x - nodes[j].x;
+          let dy = nodes[i].y - nodes[j].y;
+          let dist = Math.sqrt(dx * dx + dy * dy);
+          if (dist === 0) { dx = 1; dy = 1; dist = Math.sqrt(2); }
+          let force = (k * k) / dist;
+          nodes[i].vx += (dx / dist) * force;
+          nodes[i].vy += (dy / dist) * force;
+        }
+      }
+      
+      let dx = centerX - nodes[i].x;
+      let dy = centerY - nodes[i].y;
+      let dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist > 0) {
+        let force = dist * 0.1; 
+        nodes[i].vx += (dx / dist) * force;
+        nodes[i].vy += (dy / dist) * force;
+      }
+    }
+
+    for (const edge of edges) {
+      const source = nodes.find(n => n.id === edge.source);
+      const target = nodes.find(n => n.id === edge.target);
+      if (source && target) {
+        let dx = target.x - source.x;
+        let dy = target.y - source.y;
+        let dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist === 0) { dx = 1; dy = 1; dist = Math.sqrt(2); }
+        let force = ((dist * dist) / k) * (1 + edge.count * 0.1);
+        let fx = (dx / dist) * force;
+        let fy = (dy / dist) * force;
+        source.vx += fx;
+        source.vy += fy;
+        target.vx -= fx;
+        target.vy -= fy;
+      }
+    }
+
+    const temperature = Math.max(1, (canvasWidth / 10) * (1 - iter / iterations));
+    for (let i = 0; i < N; i++) {
+      let vx = nodes[i].vx;
+      let vy = nodes[i].vy;
+      let vMag = Math.sqrt(vx * vx + vy * vy);
+      if (vMag > 0) {
+        nodes[i].x += (vx / vMag) * Math.min(vMag, temperature);
+        nodes[i].y += (vy / vMag) * Math.min(vMag, temperature);
+      }
+      nodes[i].x = Math.max(nodeW / 2, Math.min(canvasWidth - nodeW / 2, nodes[i].x));
+      nodes[i].y = Math.max(nodeH / 2, Math.min(canvasHeight - nodeH / 2, nodes[i].y));
+    }
+  }
+
+  return { nodes, edges, width: canvasWidth, height: canvasHeight };
 };
 
 // ── Component ──────────────────────────────────────────────────────────────
@@ -337,8 +410,8 @@ export const AnalysisPageComponent = () => {
       const { token } = await identityApi.getCredentials();
       const endpoint = useGithubRepos ? `${BASE_URL}/analyze-repos` : `${BASE_URL}/analyze-all`;
       const body = useGithubRepos
-        ? { threshold, repositories: Array.from(selectedGithubRepos) }
-        : { threshold, selected_services: Array.from(selectedServices) };
+        ? { threshold: 0.5, repositories: Array.from(selectedGithubRepos) }
+        : { threshold: 0.5, selected_services: Array.from(selectedServices) };
 
       const resp = await fetch(endpoint, {
         method:  'POST',
@@ -383,98 +456,439 @@ export const AnalysisPageComponent = () => {
     if (!allReport || !previewReport) return;
 
     const doc = new jsPDF();
-    const timestamp = new Date().toISOString().split('T')[0];
-    const pageWidth = doc.internal.pageSize.getWidth();
-    const pageHeight = doc.internal.pageSize.getHeight();
-    let yPosition = 20;
+    const timestamp  = new Date().toISOString().split('T')[0];
+    const PW         = doc.internal.pageSize.getWidth();   // 210
+    const PH         = doc.internal.pageSize.getHeight();  // 297
+    const ML = 14;   // left margin
+    const MR = 14;   // right margin
+    const CW = PW - ML - MR;  // content width
+    let   y  = 0;
 
-    const addText = (text: string, fontSize = 10, isBold = false) => {
-      if (isBold) doc.setFont('helvetica', 'bold');
-      else doc.setFont('helvetica', 'normal');
-      doc.setFontSize(fontSize);
-
-      const lines = doc.splitTextToSize(text, pageWidth - 40);
-      const lineHeight = fontSize * 0.5;
-
-      lines.forEach((line: string) => {
-        if (yPosition + lineHeight > pageHeight - 20) {
-          doc.addPage();
-          yPosition = 20;
-        }
-        doc.text(line, 20, yPosition);
-        yPosition += lineHeight;
-      });
+    // ── Corporate colour palette ───────────────────────────────────────────
+    const C = {
+      darkBg:   [15,  23,  42]  as [number,number,number], // dark slate
+      primary:  [14, 116, 144]  as [number,number,number], // professional cyan-blue
+      primaryLt:[236, 254, 255] as [number,number,number],
+      white:    [255,255,255]   as [number,number,number],
+      textDark: [30,  41,  59]  as [number,number,number],
+      textMid:  [71,  85, 105]  as [number,number,number],
+      textLt:   [148,163,184]   as [number,number,number],
+      border:   [226,232,240]   as [number,number,number],
+      red:      [220, 38,  38]  as [number,number,number],
+      redLt:    [254,226,226]   as [number,number,number],
+      orange:   [234,  88,  12] as [number,number,number],
+      orangeLt: [255,237,213]   as [number,number,number],
+      green:    [ 21,128, 61]   as [number,number,number],
+      greenLt:  [220,252,231]   as [number,number,number],
+      codeBg:   [248,250,252]   as [number,number,number], // light mode code block
+      codeFg:   [51,  65, 85]   as [number,number,number],
+      rowAlt:   [248,250,252]   as [number,number,number],
+      badgeGray:[241,245,249]   as [number,number,number],
+      badgeGrayFg:[71,85,105]   as [number,number,number],
     };
 
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(18);
-    doc.text('Clone Detection Report', pageWidth / 2, yPosition, { align: 'center' });
-    yPosition += 15;
+    // ── helpers ─────────────────────────────────────────────────────────────
 
-    addText(`Generated: ${new Date().toLocaleString()}`, 10);
-    addText(`Threshold: ${(threshold * 100).toFixed(0)}%`, 10);
-    addText(`Source Type: ${selectedGithubRepos.size > 0 ? 'GitHub Repositories' : 'Catalog Services'}`, 10);
-    yPosition += 10;
+    const newPage = () => { doc.addPage(); y = 18; };
+    const checkY = (needed: number) => { if (y + needed > PH - 16) newPage(); };
 
+    const fillRect = (x: number, ry: number, w: number, h: number, color: [number,number,number]) => {
+      doc.setFillColor(...color);
+      doc.rect(x, ry, w, h, 'F');
+    };
+
+    const strokeRect = (x: number, ry: number, w: number, h: number, color: [number,number,number], lw = 0.2) => {
+      doc.setDrawColor(...color);
+      doc.setLineWidth(lw);
+      doc.rect(x, ry, w, h, 'S');
+    };
+
+    const fillRoundRect = (x: number, ry: number, w: number, h: number, r: number, color: [number,number,number]) => {
+      doc.setFillColor(...color);
+      doc.roundedRect(x, ry, w, h, r, r, 'F');
+    };
+
+    const strokeRoundRect = (x: number, ry: number, w: number, h: number, r: number, color: [number,number,number], lw = 0.2) => {
+      doc.setDrawColor(...color);
+      doc.setLineWidth(lw);
+      doc.roundedRect(x, ry, w, h, r, r, 'S');
+    };
+
+    const text = (
+      str: string,
+      x: number,
+      ty: number,
+      opts: {
+        size?: number;
+        bold?: boolean;
+        color?: [number,number,number];
+        maxW?: number;
+        lineH?: number;
+        mono?: boolean;
+        align?: 'left' | 'center' | 'right';
+      } = {},
+    ): number => {
+      const size   = opts.size   ?? 9;
+      const bold   = opts.bold   ?? false;
+      const color  = opts.color  ?? C.textDark;
+      const maxW   = opts.maxW   ?? CW;
+      const lineH  = opts.lineH  ?? size * 0.42;
+      const mono   = opts.mono   ?? false;
+      const align  = opts.align  ?? 'left';
+
+      doc.setFont(mono ? 'courier' : 'helvetica', bold ? 'bold' : 'normal');
+      doc.setFontSize(size);
+      doc.setTextColor(...color);
+
+      const lines: string[] = doc.splitTextToSize(str, maxW);
+      lines.forEach((ln: string) => {
+        if (ty > PH - 14) { doc.addPage(); ty = 18; }
+        doc.text(ln, x, ty, { align });
+        ty += lineH;
+      });
+      return ty;
+    };
+
+    const badge = (
+      label: string,
+      x: number,
+      by: number,
+      bg: [number,number,number],
+      fg: [number,number,number],
+    ): number => {
+      const size = 7.5;
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(size);
+      const tw = doc.getTextWidth(label);
+      const pw2 = 3.5, ph2 = 2.4;
+      const bh = size * 0.72 + ph2;
+      const r = bh / 2;
+      fillRoundRect(x, by - size * 0.72 - (ph2 / 2) + 0.5, tw + pw2 * 2, bh, r, bg);
+      doc.setTextColor(...fg);
+      doc.text(label, x + pw2, by);
+      return x + tw + pw2 * 2 + 3;
+    };
+
+    const hr = (hy: number, color: [number,number,number] = C.border) => {
+      doc.setDrawColor(...color);
+      doc.setLineWidth(0.2);
+      doc.line(ML, hy, PW - MR, hy);
+    };
+
+    const scoreStyle = (score: number): { bg: [number,number,number]; fg: [number,number,number] } => {
+      if (score >= 0.95) return { bg: C.red,    fg: C.white };
+      if (score >= 0.90) return { bg: C.orange, fg: C.white };
+      return                    { bg: C.green,  fg: C.white };
+    };
+
+    const urgencyStyle = (u: string): { bg: [number,number,number]; fg: [number,number,number]; lt: [number,number,number] } => {
+      if (u === 'HIGH')   return { bg: C.red,    fg: C.white, lt: C.redLt    };
+      if (u === 'MEDIUM') return { bg: C.orange, fg: C.white, lt: C.orangeLt };
+      return                     { bg: C.green,  fg: C.white, lt: C.greenLt  };
+    };
+
+    const codeBlock = (code: string, bx: number, by: number, bw: number): number => {
+      if (!code) return by;
+      const lines   = code.split('\n').slice(0, 40);
+      const lineH   = 3.8;
+      const padX    = 4;
+      const padY    = 4;
+      const bh      = lines.length * lineH + padY * 2;
+
+      fillRoundRect(bx, by, bw, bh, 2, C.codeBg);
+      strokeRoundRect(bx, by, bw, bh, 2, C.border, 0.2);
+
+      doc.setFont('courier', 'normal');
+      doc.setFontSize(7);
+      doc.setTextColor(...C.codeFg);
+
+      let ty = by + padY + lineH * 0.7;
+      for (const ln of lines) {
+        if (ty > PH - 14) break;
+        const trimmed = ln.length > 90 ? ln.slice(0, 87) + '...' : ln;
+        doc.text(trimmed, bx + padX, ty);
+        ty += lineH;
+      }
+      return by + bh;
+    };
+
+    const sectionHeading = (title: string, sy: number): number => {
+      checkY(14);
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(14);
+      doc.setTextColor(...C.primary);
+      doc.text(title, ML, sy + 6);
+      hr(sy + 8, C.border);
+      return sy + 14;
+    };
+
+    // ── COVER PAGE & HEADER ──────────────────────────────────────────────────
+    // System name banner
+    const systemName = selectedProject?.name
+      ?? (selectedGithubRepos.size > 0 ? Array.from(selectedGithubRepos).join(', ') : null)
+      ?? 'Unknown System';
+
+    fillRect(0, 0, PW, 22, C.darkBg);  // dark top bar
+    text('Semantic Clone Detection', ML, 10, { size: 9, color: C.textLt, bold: false });
+    text(systemName, ML, 17, { size: 13, color: C.white, bold: true });
+    text(`Generated: ${new Date().toLocaleString()}`, PW - MR, 17, { size: 8, color: C.textLt, align: 'right' });
+
+    y = 30;
+    text('Clone Detection Report', ML, y, { size: 18, color: C.textDark, bold: true });
+    fillRect(ML, y + 4, CW, 0.8, C.primary); // clean accent line
+    y = y + 12;
+
+    // ── META INFO CARDS ──────────────────────────────────────────────────────
     const sources = selectedGithubRepos.size > 0
       ? Array.from(selectedGithubRepos)
       : Array.from(selectedServices);
-    addText(`Sources: ${sources.join(', ')}`, 10);
-    yPosition += 15;
 
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(14);
-    doc.text('Summary', 20, yPosition);
-    yPosition += 10;
-
-    const summaryData = [
-      ['Services Analyzed', allReport.summary?.services_analysed?.toString() || '0'],
-      ['Functions Processed', allReport.summary?.functions_processed?.toString() || '0'],
-      ['Functions Sliced', allReport.summary?.functions_sliced?.toString() || '0'],
-      ['Pairs Checked', allReport.summary?.cross_service_pairs?.toString() || '0'],
-      ['Clones Found', (previewReport.clone_pairs?.length ?? 0).toString()],
-      ['Processing Time', `${allReport.meta?.processing_time_sec || 0}s`]
+    const metaItems = [
+      { label: 'Similarity Threshold',  value: `${(threshold * 100).toFixed(0)}%` },
+      { label: 'Analysis Source',     value: selectedGithubRepos.size > 0 ? 'GitHub Repositories' : 'Backstage Catalog' },
+      { label: 'Services Analysed',   value: sources.length.toString() },
+      { label: 'Clones Found',     value: (previewReport.clone_pairs?.length ?? 0).toString() },
     ];
 
-    summaryData.forEach(([label, value]) => {
-      addText(`${label}: ${value}`, 10);
+    const boxW = (CW - 9) / 4;
+    metaItems.forEach((item, i) => {
+      const bx = ML + i * (boxW + 3);
+      fillRoundRect(bx, y, boxW, 20, 2, C.badgeGray);
+      strokeRoundRect(bx, y, boxW, 20, 2, C.border, 0.2);
+      
+      text(item.label, bx + boxW / 2, y + 7, { size: 7.5, color: C.textMid, align: 'center', maxW: boxW });
+      text(item.value, bx + boxW / 2, y + 14, { size: 12, bold: true, color: C.textDark, align: 'center', maxW: boxW });
     });
+    y += 28;
 
-    yPosition += 15;
-
-    if (previewReport.clone_pairs && previewReport.clone_pairs.length > 0) {
-      doc.setFont('helvetica', 'bold');
-      doc.setFontSize(14);
-      doc.text('Detected Clone Pairs', 20, yPosition);
-      yPosition += 10;
-
-      previewReport.clone_pairs.forEach((pair, index) => {
-        if (yPosition > pageHeight - 60) {
-          doc.addPage();
-          yPosition = 20;
-        }
-
-        addText(`Pair ${index + 1}:`, 11, true);
-        addText(`Score: ${(pair.score * 100).toFixed(1)}% (${pair.confidence})`, 9);
-        addText(`Function 1: ${pair.function_1} (${pair.service_1})`, 9);
-        addText(`Function 2: ${pair.function_2} (${pair.service_2})`, 9);
-        addText(`Languages: ${pair.lang_1} ↔ ${pair.lang_2}`, 9);
-
-        if (pair.recommendation) {
-          addText(`Recommendation: ${pair.recommendation.action} (${pair.recommendation.urgency})`, 9);
-          if (pair.recommendation.detail) {
-            addText(`Details: ${pair.recommendation.detail}`, 9);
-          }
-        }
-
-        yPosition += 8;
-      });
-    } else {
-      addText('No clone pairs detected with current threshold.', 10);
+    if (sources.length > 0) {
+      text(`Included Services: ${sources.join(', ')}`, ML, y, { size: 8.5, color: C.textMid, maxW: CW });
+      y += 8;
     }
 
-    const filename = `clone-detection-report-${timestamp}.pdf`;
-    doc.save(filename);
+    // ── SUMMARY TABLE ────────────────────────────────────────────────────────
+    y = sectionHeading('Analysis Summary', y);
+
+    const summaryRows = [
+      ['Services Analysed',   allReport.summary?.services_analysed?.toString() ?? '0'],
+      ['Functions Processed', allReport.summary?.functions_processed?.toString() ?? '0'],
+      ['Functions Sliced',    allReport.summary?.functions_sliced?.toString() ?? '0'],
+      ['Pairs Evaluated',     allReport.summary?.cross_service_pairs?.toString() ?? '0'],
+      ['Clones Detected',     (previewReport.clone_pairs?.length ?? 0).toString()],
+      ['Processing Time',     `${allReport.meta?.processing_time_sec ?? 0}s`],
+    ];
+
+    const col1 = 100;
+    summaryRows.forEach(([label, val], i) => {
+      const ry = y + i * 7.5;
+      if (i % 2 === 0) fillRoundRect(ML, ry - 5.5, CW, 7.5, 1, C.rowAlt);
+      text(label, ML + 3, ry, { size: 9, bold: true,  color: C.textDark });
+      text(val,   ML + col1, ry, { size: 9, color: C.textDark });
+    });
+    y += summaryRows.length * 7.5 + 8;
+
+    // ── REFACTORING RECOMMENDATIONS ──────────────────────────────────────────
+    const allPairs = previewReport.clone_pairs ?? [];
+    const highPairs   = allPairs.filter(p => p.recommendation?.urgency === 'HIGH');
+    const medPairs    = allPairs.filter(p => p.recommendation?.urgency === 'MEDIUM');
+    const lowPairs    = allPairs.filter(p => p.recommendation?.urgency === 'LOW');
+
+    if (highPairs.length > 0 || medPairs.length > 0 || lowPairs.length > 0) {
+      y = sectionHeading('Refactoring Recommendations', y);
+
+      const levels: Array<{
+        pairs: typeof allPairs;
+        color: [number,number,number];
+        lt: [number,number,number];
+        label: string;
+        blurb: string;
+      }> = [
+        {
+          pairs: highPairs,
+          color: C.red,
+          lt:    C.redLt,
+          label: 'High Urgency',
+          blurb: `${highPairs.length} clone pair${highPairs.length !== 1 ? 's' : ''} exhibit very high semantic similarity. ` +
+                 'These duplicates should be addressed promptly. Extract the shared logic into a common utility, ' +
+                 'shared library, or abstract base class to reduce maintenance risk and prevent divergence.',
+        },
+        {
+          pairs: medPairs,
+          color: C.orange,
+          lt:    C.orangeLt,
+          label: 'Medium Urgency',
+          blurb: `${medPairs.length} clone pair${medPairs.length !== 1 ? 's' : ''} show moderate overlap. ` +
+                 'Review these pairs and consider merging or parameterising the repeated logic. ' +
+                 'If intentional divergence is expected, add inline comments to document the reasoning.',
+        },
+        {
+          pairs: lowPairs,
+          color: C.green,
+          lt:    C.greenLt,
+          label: 'Low Urgency',
+          blurb: `${lowPairs.length} clone pair${lowPairs.length !== 1 ? 's' : ''} have a lower similarity score. ` +
+                 'Monitor these over time. No immediate action is required, but track any future changes ' +
+                 'to avoid the pairs drifting into higher-urgency territory.',
+        },
+      ].filter(l => l.pairs.length > 0);
+
+      levels.forEach(lvl => {
+        checkY(28);
+        // Coloured left bar + label
+        fillRect(ML, y, 3, 18, lvl.color);
+        fillRoundRect(ML + 3, y, CW - 3, 18, 1.5, lvl.lt);
+
+        text(lvl.label, ML + 8, y + 6, { size: 9, bold: true, color: lvl.color });
+        y = text(lvl.blurb, ML + 8, y + 12, { size: 8.5, color: C.textDark, maxW: CW - 10, lineH: 4.2 });
+        y += 6;
+      });
+
+      y += 4;
+    }
+
+    // ── CLONE PAIRS ──────────────────────────────────────────────────────────
+    if (!previewReport.clone_pairs || previewReport.clone_pairs.length === 0) {
+      y = sectionHeading('Detected Clone Pairs', y);
+      text('No clone pairs detected above the selected threshold.', ML, y, { size: 9, color: C.textMid });
+    } else {
+      y = sectionHeading(`Detected Clone Pairs (${previewReport.clone_pairs.length})`, y);
+
+      previewReport.clone_pairs.forEach((pair, idx) => {
+        const hasCode1 = !!(pair as any).code_1;
+        const hasCode2 = !!(pair as any).code_2;
+        const codeLines1 = hasCode1 ? Math.min(((pair as any).code_1.split('\n').length), 40) : 0;
+        const codeLines2 = hasCode2 ? Math.min(((pair as any).code_2.split('\n').length), 40) : 0;
+        const maxCodeLines = Math.max(codeLines1, codeLines2);
+        const estH = 18 + 22 + (maxCodeLines * 3.8 + 8) + 28;
+        checkY(Math.min(estH, 80));
+
+        // ── Pair Header Card ─────────────────────────────────────────────
+        fillRoundRect(ML, y, CW, 12, 2, C.badgeGray);
+        strokeRoundRect(ML, y, CW, 12, 2, C.border, 0.3);
+        
+        doc.setTextColor(...C.textDark);
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(10);
+        doc.text(`Clone Pair #${idx + 1}`, ML + 4, y + 8);
+
+        // badges aligned to the right
+        const ss = scoreStyle(pair.score);
+        
+        let bx = ML + 40;
+        bx = badge(`Score: ${(pair.score * 100).toFixed(1)}%`, bx, y + 8, ss.bg, ss.fg);
+        bx = badge(pair.confidence, bx, y + 8, C.textMid, C.white);
+        badge(pair.lang_pair, bx, y + 8, C.white, C.textMid);
+
+        y += 16;
+
+        // ── Side-by-side function meta headers ──────────────────────────
+        const colGap  = 4;
+        const colW    = (CW - colGap) / 2;
+        const colBx   = ML;          // left column x
+        const colBx2  = ML + colW + colGap; // right column x
+        const colorB: [number,number,number] = [13, 148, 136]; // Teal
+
+        const fn1name  = pair.function_1?.split('::')[1] ?? '';
+        const fn1file  = pair.function_1?.split('::')[0]?.replace(`${pair.service_1}/`, '') ?? '';
+        const fn1lines = `${pair.location_1?.start ?? '?'} – ${pair.location_1?.end ?? '?'}`;
+
+        const fn2name  = pair.function_2?.split('::')[1] ?? '';
+        const fn2file  = pair.function_2?.split('::')[0]?.replace(`${pair.service_2}/`, '') ?? '';
+        const fn2lines = `${pair.location_2?.start ?? '?'} – ${pair.location_2?.end ?? '?'}`;
+
+        const drawSideMeta = (
+          bx: number, bw: number,
+          title: string, color: [number,number,number],
+          service: string, funcName: string, file: string, lang: string, linesStr: string,
+        ) => {
+          // accent pill header
+          fillRoundRect(bx, y, bw, 10, 1.5, color);
+          doc.setFont('helvetica', 'bold');
+          doc.setFontSize(8.5);
+          doc.setTextColor(...C.white);
+          doc.text(title, bx + 3, y + 7);
+          doc.setFont('helvetica', 'normal');
+          doc.setFontSize(7.5);
+          doc.text(`${lang}  ·  lines ${linesStr}`, bx + bw - 3, y + 7, { align: 'right' });
+
+          const metaY = y + 14;
+          text(`Service:`, bx + 2, metaY, { size: 7.5, bold: true,  color: C.textDark, maxW: bw });
+          text(service,    bx + 18, metaY, { size: 7.5, color: C.textMid,  maxW: bw - 20 });
+          text(`Function:`, bx + 2, metaY + 5, { size: 7.5, bold: true, color: C.textDark, maxW: bw });
+          text(funcName || '(anonymous)', bx + 20, metaY + 5, { size: 7.5, mono: true, color: C.textMid, maxW: bw - 22 });
+          text(`File:`, bx + 2, metaY + 10, { size: 7.5, bold: true, color: C.textDark, maxW: bw });
+          text(file, bx + 12, metaY + 10, { size: 7.5, color: C.textMid, maxW: bw - 14 });
+        };
+
+        drawSideMeta(colBx,  colW, 'Snippet A', C.primary, pair.service_1, fn1name, fn1file, pair.lang_1, fn1lines);
+        drawSideMeta(colBx2, colW, 'Snippet B', colorB,    pair.service_2, fn2name, fn2file, pair.lang_2, fn2lines);
+
+        y += 30; // meta block height
+
+        // ── Side-by-side code blocks ─────────────────────────────────────
+        if (hasCode1 || hasCode2) {
+          const codeLineH = 3.8;
+          const codePadX  = 3;
+          const codePadY  = 3;
+          const sharedCodeLines = Math.max(
+            hasCode1 ? Math.min((pair as any).code_1.split('\n').length, 40) : 0,
+            hasCode2 ? Math.min((pair as any).code_2.split('\n').length, 40) : 0,
+          );
+          const blockH = sharedCodeLines * codeLineH + codePadY * 2;
+
+          checkY(blockH + 8);
+
+          // draw background rects for both columns
+          fillRoundRect(colBx,  y, colW, blockH, 2, C.codeBg);
+          strokeRoundRect(colBx,  y, colW, blockH, 2, C.border, 0.2);
+          fillRoundRect(colBx2, y, colW, blockH, 2, C.codeBg);
+          strokeRoundRect(colBx2, y, colW, blockH, 2, C.border, 0.2);
+
+          // helper: render code lines in a column without growing y
+          const renderCodeCol = (code: string | undefined, bx: number, bw: number) => {
+            if (!code) return;
+            const lines = code.split('\n').slice(0, 40);
+            doc.setFont('courier', 'normal');
+            doc.setFontSize(6.5);
+            doc.setTextColor(...C.codeFg);
+            let ty = y + codePadY + codeLineH * 0.7;
+            const maxChars = Math.floor((bw - codePadX * 2) / 1.85);
+            for (const ln of lines) {
+              if (ty > PH - 14) break;
+              const trimmed = ln.length > maxChars ? ln.slice(0, maxChars - 2) + '…' : ln;
+              doc.text(trimmed, bx + codePadX, ty);
+              ty += codeLineH;
+            }
+          };
+
+          renderCodeCol((pair as any).code_1, colBx,  colW);
+          renderCodeCol((pair as any).code_2, colBx2, colW);
+
+          y += blockH + 6;
+        } else {
+          y += 2;
+        }
+
+        y += 6;
+        hr(y, C.border);
+        y += 8;
+      });
+    }
+
+    // ── FOOTER on every page ─────────────────────────────────────────────────
+    const totalPages = (doc as any).internal.getNumberOfPages();
+    for (let p = 1; p <= totalPages; p++) {
+      doc.setPage(p);
+      
+      hr(PH - 12, C.border);
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(8);
+      doc.setTextColor(...C.textMid);
+      doc.text('GraphCodeBERT Semantic Clone Detection', ML, PH - 7);
+      doc.text(`Page ${p} of ${totalPages}`, PW - MR, PH - 7, { align: 'right' });
+    }
+
+    doc.save(`clone-report-${timestamp}.pdf`);
   };
 
   // ── Render ────────────────────────────────────────────────────────────────
@@ -503,7 +917,7 @@ export const AnalysisPageComponent = () => {
               <Typography variant="body2" color="textSecondary" gutterBottom>
                 Select a project, then choose which services to compare.
                 Backstage fetches source code from GitHub and runs
-                GraphCodeBERT semantic analysis automatically.
+                semantic analysis automatically.
               </Typography>
 
               <Divider style={{ margin: '12px 0' }} />
@@ -566,7 +980,7 @@ export const AnalysisPageComponent = () => {
                     );
                   })}
 
-                  <Paper
+                  {/* <Paper
                     key="github-repos"
                     elevation={selectedSource === 'github' ? 4 : 1}
                     onClick={handleLoadGithubRepos}
@@ -599,7 +1013,7 @@ export const AnalysisPageComponent = () => {
                         )}
                       </Box>
                     </Box>
-                  </Paper>
+                  </Paper> */}
                 </Box>
               )}
 
@@ -692,7 +1106,7 @@ export const AnalysisPageComponent = () => {
                     <>
                       <Progress />
                       <Typography variant="caption" color="textSecondary">
-                        Fetching source code from GitHub and running GraphCodeBERT analysis…
+                        Fetching source code from GitHub and running analysis…
                         This may take few minutes on first run.
                       </Typography>
                     </>
@@ -801,7 +1215,7 @@ export const AnalysisPageComponent = () => {
                     <>
                       <Progress />
                       <Typography variant="caption" color="textSecondary">
-                        Fetching source code from GitHub and running GraphCodeBERT analysis…
+                        Fetching source code from GitHub and running analysis…
                         This may take few minutes on first run.
                       </Typography>
                     </>
@@ -895,14 +1309,14 @@ export const AnalysisPageComponent = () => {
                         borderRadius: theme.shape.borderRadius,
                       }}
                     >
-                      <svg
-                        width="100%"
-                        viewBox="0 0 700 340"
-                        style={{ display: 'block', minWidth: 700, height: 340 }}
-                      >
-                        {(() => {
-                          const graph = buildCloneGraph(previewReport!);
-                          return (
+                      {(() => {
+                        const graph = buildCloneGraph(previewReport!);
+                        return (
+                          <svg
+                            width="100%"
+                            viewBox={`0 0 ${graph.width} ${graph.height}`}
+                            style={{ display: 'block', minWidth: Math.max(700, graph.width), height: Math.max(340, graph.height) }}
+                          >
                             <>
                               {graph.edges.map((edge, index) => {
                                 const source = graph.nodes.find(node => node.id === edge.source);
@@ -956,9 +1370,9 @@ export const AnalysisPageComponent = () => {
                                 );
                               })}
                             </>
-                          );
-                        })()}
-                      </svg>
+                          </svg>
+                        );
+                      })()}
                     </Box>
                   </Box>
 

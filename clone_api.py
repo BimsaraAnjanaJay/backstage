@@ -64,50 +64,12 @@ os.makedirs(FAISS_CACHE_DIR, exist_ok=True)
 
 PIPELINE_VERSION = "v4_minimal_realworld_skip_only"
 
-# Additional real-world file filters
 EXTRA_IGNORE_FILENAMES = {
     # generated / stubs
     "demo_pb2.py",
     "demo_pb2_grpc.py",
 
-    # trivial entry points / bootstrap
-    "index.js",
-    "main.js",
-    "main.ts",
-    "main.py",
-    "Main.java",
-    "app.js",
-    "app.ts",
-    "App.java",
-    "server.js",
-    "server.ts",
-    "Application.java",
-
-    # logging / constants / settings
-    "logger.py",
-    "logger.js",
-    "logger.ts",
-    "Logger.java",
-    "logging.py",
-    "config.js",
-    "config.ts",
-    "config.py",
-    "Config.java",
-    "settings.py",
-    "settings.js",
-    "settings.ts",
-    "constants.js",
-    "constants.ts",
-    "constants.py",
-    "Constants.java",
-    "environment.js",
-    "environment.ts",
-
     # client wrappers / harnesses
-    "client.js",
-    "client.ts",
-    "client.py",
-    "email_client.py",
     "ApiClient.java",
     "RestClient.java",
 }
@@ -238,31 +200,7 @@ def should_ignore_file(path: str) -> tuple[bool, str]:
     return False, ""
 
 
-def detect_shared_files(services_input: list) -> set:
-    """
-    Skip files that are literally the same content across services.
-    This only removes unnecessary real-world duplicated boilerplate.
-    """
-    by_hash = defaultdict(list)
-
-    for svc_entry in services_input:
-        svc = svc_entry.get("service", "unknown")
-        for f in svc_entry.get("files", []):
-            path = f.get("path") or f.get("filename", "")
-            content = f.get("content", "")
-            file_hash = hashlib.sha256(normalize_text_for_hash(content).encode("utf-8")).hexdigest()
-            by_hash[file_hash].append((svc, path))
-
-    shared = set()
-    for file_hash, entries in by_hash.items():
-        services = {svc for svc, _ in entries}
-        if len(services) < 2:
-            continue
-        for svc, path in entries:
-            shared.add((svc, path))
-            log.info(f"  [SHARED FILE] {svc}/{path} identical across services — skipping")
-
-    return shared
+# detect_shared_files removed for research purposes
 
 
 def embed_function(tokens, dfg):
@@ -305,6 +243,7 @@ def process_services(services_input: list, shared_files: set) -> tuple:
 
     for svc_entry in services_input:
         service_name = svc_entry.get("service", "unknown")
+        log.info(f"\n--- Handling Service: {service_name} ---")
         files = svc_entry.get("files", [])
 
         content_hash = compute_service_content_hash(files)
@@ -541,7 +480,7 @@ def build_clone_report(records: list, indices: dict, threshold: float) -> dict:
             "pipeline_version": PIPELINE_VERSION,
         },
         "summary": {
-            "services_analysed": len(service_names),
+            "services_analysed": len(indices),
             "service_names": service_names,
             "functions_processed": len(records),
             "functions_sliced": sum(1 for r in records if r.get("sliced", False)),
@@ -661,8 +600,7 @@ def detect_clones():
     )
 
     try:
-        shared_files = detect_shared_files(services_input)
-        records, indices = process_services(services_input, shared_files)
+        records, indices = process_services(services_input, set())
         report = build_clone_report(records, indices, threshold)
     except Exception as e:
         log.error(f"Pipeline error: {e}", exc_info=True)
@@ -670,7 +608,6 @@ def detect_clones():
 
     report["meta"] = {
         "processing_time_sec": round(time.time() - t0, 2),
-        "shared_files_skipped": len(shared_files),
     }
     log.info(
         f"Done — {report['summary']['functions_processed']} functions, "
