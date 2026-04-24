@@ -14,7 +14,11 @@
  * limitations under the License.
  */
 
-import { RelocationResult, ServiceFunctionRegistry, RegistryFunction } from '../../lib/types';
+import {
+  RelocationResult,
+  ServiceFunctionRegistry,
+  RegistryFunction,
+} from '../../lib/types';
 
 interface CodeLocation {
   file: string;
@@ -62,7 +66,10 @@ function resolveCodeLocation(
   registryByService: Map<string, RegistryFunction[]>,
 ): CodeLocation | undefined {
   // Try exact service first, then all services
-  const serviceNames = [serviceName, ...Array.from(registryByService.keys()).filter(s => s !== serviceName)];
+  const serviceNames = [
+    serviceName,
+    ...Array.from(registryByService.keys()).filter(s => s !== serviceName),
+  ];
 
   for (const svcName of serviceNames) {
     const functions = registryByService.get(svcName);
@@ -101,6 +108,23 @@ function resolveCodeLocation(
       f => f.name.toLowerCase() === lowerName,
     );
     if (caseInsensitive) return toCodeLocation(caseInsensitive);
+
+    // 5. Service-prefix strip: some static registries store functions as
+    //    "{service}-{functionName}" (e.g. "auth-extractTokenHash") while the
+    //    trace reports only "extractTokenHash". Strip the "{service}-" prefix
+    //    from registry candidates and retry matching.
+    const servicePrefix = `${svcName}-`;
+    for (const fn of functions) {
+      if (!fn.name.startsWith(servicePrefix)) continue;
+      const stripped = fn.name.slice(servicePrefix.length);
+      if (
+        stripped === functionName ||
+        stripped.toLowerCase() === lowerName ||
+        stripped.startsWith(`${functionName}-`)
+      ) {
+        return toCodeLocation(fn);
+      }
+    }
   }
 
   return undefined;
@@ -111,6 +135,8 @@ function toCodeLocation(fn: RegistryFunction): CodeLocation {
     file: fn.file,
     className: fn.className,
     lineStart: undefined, // Line numbers not tracked in current registry
-    displayPath: fn.className ? `${fn.file} (${fn.className}.${fn.name})` : `${fn.file}:${fn.name}`,
+    displayPath: fn.className
+      ? `${fn.file} (${fn.className}.${fn.name})`
+      : `${fn.file}:${fn.name}`,
   };
 }

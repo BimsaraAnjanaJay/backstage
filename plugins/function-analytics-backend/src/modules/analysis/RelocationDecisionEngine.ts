@@ -119,12 +119,16 @@ function hasCircularRisk(
     }
   }
 
-  // BFS from target — can we reach current?
+  // BFS from current — can current reach target?
+  // If yes, moving fn to target would create a cycle: current → target → ... → current.
+  // (Do NOT start from target: target always has a direct edge to current because
+  //  target is the dominant caller — that edge is exactly why we're considering relocation.
+  //  Starting from target trivially returns true for every misplaced function.)
   const visited = new Set<string>();
-  const queue: string[] = [target];
+  const queue: string[] = [current];
   while (queue.length > 0) {
     const node = queue.shift()!;
-    if (node === current) return true;
+    if (node === target) return true;
     if (visited.has(node)) continue;
     visited.add(node);
     for (const next of callGraph.get(node) || []) {
@@ -160,13 +164,16 @@ function computePriorityScore(
   const confidenceScore = confidence;
 
   // Component 4: cohesion improvement (delta is typically -0.5 to +0.5, normalize to 0–1)
-  const cohesionScore = Math.min(Math.max((cohesionDelta + 0.5) / 1.0, 0), 1);
+  const cohesionImprovement = Math.min(
+    Math.max((cohesionDelta + 0.5) / 1.0, 0),
+    1,
+  );
 
   return (
     externalRatioScore * 0.4 +
     latencyPenalty * 0.3 +
     confidenceScore * 0.2 +
-    cohesionScore * 0.1
+    cohesionImprovement * 0.1
   );
 }
 

@@ -64,11 +64,15 @@ export function analyzeVolatility(
     const windowCount = counts.length;
 
     if (windowCount <= 1) {
-      // Single window — cannot compute meaningful CV, treat as volatile
+      // Only one time-window observed — cannot compute a meaningful CV.
+      // This is common when a short benchmark run (e.g. 5 rounds in < 5 min)
+      // places ALL spans in the same window bucket.
+      // Treat as neutral stability (CV = 0, not volatile) rather than
+      // Infinity, which would zero out confidence for every function.
       results.set(key, {
         functionKey: key,
-        coefficientOfVariation: windowCount === 0 ? 0 : Infinity,
-        isVolatile: windowCount === 1,
+        coefficientOfVariation: 0,
+        isVolatile: false,
         windowCount,
       });
       continue;

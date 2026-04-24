@@ -26,11 +26,14 @@ function lastMeaningfulSegment(urlPath: string): string {
   const parts = urlPath.split('/').filter(p => p && p !== 'api');
   for (let i = parts.length - 1; i >= 0; i--) {
     const seg = parts[i].split('?')[0];
-    if (!seg || seg === '*') continue;
+    if (!seg || /^\*+$/.test(seg)) continue;
     if (/^\d+$/.test(seg)) continue;
     if (
-      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(seg)
-    ) continue;
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+        seg,
+      )
+    )
+      continue;
     if (/^\{.+\}$/.test(seg) || /^<.+>$/.test(seg)) continue;
     return seg;
   }

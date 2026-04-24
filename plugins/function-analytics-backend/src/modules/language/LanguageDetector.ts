@@ -26,6 +26,7 @@ export type SupportedLanguage =
   | 'ruby'
   | 'rust'
   | 'dotnet'
+  | 'cpp'
   | 'unknown';
 
 export interface LanguageResult {
@@ -110,6 +111,17 @@ export async function detectLanguage(
   );
   if (projectFile) {
     return 'dotnet';
+  }
+
+  // C / C++ — CMakeLists.txt or a Makefile alongside .cpp/.cc/.h sources
+  if (await fs.pathExists(path.join(servicePath, 'CMakeLists.txt'))) {
+    return 'cpp';
+  }
+  if (await fs.pathExists(path.join(servicePath, 'Makefile'))) {
+    const hasCppSources = allFiles.some(
+      f => f.endsWith('.cpp') || f.endsWith('.cc') || f.endsWith('.cxx'),
+    );
+    if (hasCppSources) return 'cpp';
   }
 
   return null;

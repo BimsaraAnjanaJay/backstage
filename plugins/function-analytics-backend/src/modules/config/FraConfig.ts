@@ -24,7 +24,11 @@ export interface TracingBackendConfig {
 }
 
 /** Discovery provider types that can be activated via config. */
-export type DiscoveryProviderType = 'monorepo' | 'docker-compose' | 'k8s' | 'static';
+export type DiscoveryProviderType =
+  | 'monorepo'
+  | 'docker-compose'
+  | 'k8s'
+  | 'static';
 
 /** Statically-defined service entry for the 'static' discovery provider. */
 export interface StaticServiceConfig {
@@ -138,7 +142,7 @@ export class FraConfig {
           },
         ],
         defaultLookbackHours: 1,
-        maxTracesPerService: 500,
+        maxTracesPerService: 20000,
         serviceNameMappings: {},
       },
       discovery: {

@@ -44,11 +44,19 @@ const IMAGE_REPLACEMENTS: Record<string, string> = {
   'python:2.7': 'python:3.11-alpine',
   'python:3.6': 'python:3.11-alpine',
   'python:3.7': 'python:3.11-alpine',
-  // Java
-  'openjdk:8-jre-alpine': 'eclipse-temurin:17-jdk-alpine',
+  // Java — legacy "java:" images (removed from Docker Hub in 2022)
+  'java:8': 'eclipse-temurin:17-jdk-alpine',
+  'java:8-jre': 'eclipse-temurin:17-jre-alpine',
+  'java:8-jdk': 'eclipse-temurin:17-jdk-alpine',
+  'java:11': 'eclipse-temurin:17-jdk-alpine',
+  'java:11-jre': 'eclipse-temurin:17-jre-alpine',
+  'java:17': 'eclipse-temurin:17-jdk-alpine',
+  'java:17-jre': 'eclipse-temurin:17-jre-alpine',
+  // openjdk images
+  'openjdk:8-jre-alpine': 'eclipse-temurin:17-jre-alpine',
   'openjdk:8-alpine': 'eclipse-temurin:17-jdk-alpine',
   'openjdk:11-alpine': 'eclipse-temurin:17-jdk-alpine',
-  'openjdk:8-jre': 'eclipse-temurin:17-jdk-alpine',
+  'openjdk:8-jre': 'eclipse-temurin:17-jre-alpine',
   'openjdk:8': 'eclipse-temurin:17-jdk-alpine',
   'openjdk:11': 'eclipse-temurin:17-jdk-alpine',
   // Go
@@ -278,6 +286,165 @@ async function fixSingleServiceDir(
       }
     }
     if (modified) content = lines.join('\n');
+  }
+
+  // ── Rewrite single-stage "copy pre-built JAR" Dockerfiles ──────────────────
+  // Pattern: FROM java:* or openjdk:*-jre  +  ADD/COPY ./target/*.jar
+  // with NO Maven/Gradle build stage.
+  // These Dockerfiles expect the JAR to be built on the host before Docker runs.
+  // In a fresh clone there is no ./target/ directory, so the build always fails.
+  // Replace the entire Dockerfile with a proper multi-stage Maven build.
+  {
+    const hasJarCopy =
+      /^(ADD|COPY)\s+\.?\/?(target\/[\w.*-]+\.jar|target\/\*\.jar)/im.test(
+        content,
+      );
+    const hasBuildStage = /^FROM\s+maven:/im.test(content);
+    const hasMvnBuild = /RUN\s+(mvn|\.\/mvnw|gradle|\.\/gradlew)\b/im.test(
+      content,
+    );
+
+    if (hasJarCopy && !hasBuildStage && !hasMvnBuild) {
+      const hasMvnw = await fs.pathExists(path.join(serviceDir, 'mvnw'));
+      const hasPom = await fs.pathExists(path.join(serviceDir, 'pom.xml'));
+      const hasGradle =
+        (await fs.pathExists(path.join(serviceDir, 'build.gradle'))) ||
+        (await fs.pathExists(path.join(serviceDir, 'build.gradle.kts')));
+
+      if (hasPom || hasGradle) {
+        let newDockerfile: string;
+        if (hasPom) {
+          const buildCmd = hasMvnw
+            ? 'RUN chmod +x mvnw && ./mvnw package -DskipTests --no-transfer-progress'
+            : 'RUN mvn package -DskipTests --no-transfer-progress';
+          newDockerfile = `${[
+            '# Rewritten by FRA: original used a pre-built JAR; replaced with multi-stage Maven build',
+            'FROM maven:3.9-eclipse-temurin-17 AS build',
+            'WORKDIR /app',
+            hasMvnw ? 'COPY .mvn/ .mvn/\nCOPY mvnw .' : '',
+            'COPY pom.xml .',
+            'COPY src ./src',
+            buildCmd,
+            '',
+            'FROM eclipse-temurin:17-jre-alpine',
+            'WORKDIR /app',
+            'COPY --from=build /app/target/*.jar app.jar',
+            'EXPOSE 8080',
+            'ENTRYPOINT ["java", "-jar", "app.jar"]',
+          ]
+            .filter(l => l !== '')
+            .join('\n')}\n`;
+        } else {
+          // Gradle
+          const buildCmd = (await fs.pathExists(
+            path.join(serviceDir, 'gradlew'),
+          ))
+            ? 'RUN chmod +x gradlew && ./gradlew build -x test --no-daemon'
+            : 'RUN gradle build -x test --no-daemon';
+          newDockerfile = `${[
+            '# Rewritten by FRA: original used a pre-built JAR; replaced with multi-stage Gradle build',
+            'FROM eclipse-temurin:17-jdk-alpine AS build',
+            'WORKDIR /app',
+            'COPY . .',
+            buildCmd,
+            '',
+            'FROM eclipse-temurin:17-jre-alpine',
+            'WORKDIR /app',
+            'COPY --from=build /app/build/libs/*.jar app.jar',
+            'EXPOSE 8080',
+            'ENTRYPOINT ["java", "-jar", "app.jar"]',
+          ].join('\n')}\n`;
+        }
+        content = newDockerfile;
+        modified = true;
+        logger.info(
+          `Rewrote pre-built-JAR Dockerfile for ${serviceName} → multi-stage ${
+            hasPom ? 'Maven' : 'Gradle'
+          } build`,
+        );
+      }
+    }
+  }
+
+  // ── Multi-module Maven: install parent POM before building ─────────────────
+  // When a child pom.xml has <parent><relativePath>../</relativePath></parent>,
+  // Maven needs the parent POM file to resolve properties and inherited deps.
+  // Docker can't access ../pom.xml from the service-directory build context.
+  // Fix: copy the parent pom.xml into the service dir as fra-parent-pom.xml,
+  // then install it into the local Maven cache at the start of the Docker build.
+  {
+    const childPomPath = path.join(serviceDir, 'pom.xml');
+    const parentPomPath = path.join(path.dirname(serviceDir), 'pom.xml');
+    const hasPom = await fs.pathExists(childPomPath);
+    const parentPomExists = hasPom && (await fs.pathExists(parentPomPath));
+
+    if (parentPomExists) {
+      let childPomContent = '';
+      try {
+        childPomContent = await fs.readFile(childPomPath, 'utf-8');
+      } catch {
+        /* ignore */
+      }
+
+      // Only proceed when the child explicitly references parent at ../
+      const needsParent =
+        childPomContent.includes('<parent>') &&
+        /<relativePath>\s*\.\.\/?\s*<\/relativePath>/.test(childPomContent);
+
+      if (
+        needsParent &&
+        content.includes('FROM maven:') &&
+        !content.includes('fra-parent-pom.xml')
+      ) {
+        // Pre-stage parent POM in the service directory so Docker COPY can reach it.
+        // Strip unavailable BUILD-SNAPSHOT dependencies (private artifacts not on Maven
+        // Central) so the Docker build doesn't fail on unresolvable artifacts.
+        let parentContent = await fs.readFile(parentPomPath, 'utf-8');
+        // Remove actual (non-commented) dependency blocks with BUILD-SNAPSHOT versions.
+        // The pattern anchors on <groupId> immediately following <dependency> to
+        // avoid matching commented-out blocks like <!--<dependency>-->.
+        parentContent = parentContent.replace(
+          /[ \t]*<dependency>\s*\n\s*<groupId>[^<]*<\/groupId>\s*\n\s*<artifactId>[^<]*<\/artifactId>\s*\n\s*<version>[^<]*BUILD-SNAPSHOT[^<]*<\/version>\s*\n\s*<\/dependency>/g,
+          '',
+        );
+        await fs.writeFile(
+          path.join(serviceDir, 'fra-parent-pom.xml'),
+          parentContent,
+        );
+
+        const hasMvnw = await fs.pathExists(path.join(serviceDir, 'mvnw'));
+        const buildCmd = hasMvnw
+          ? './mvnw package -DskipTests --no-transfer-progress'
+          : 'mvn package -DskipTests --no-transfer-progress';
+        const mvnwLines = hasMvnw
+          ? ['COPY .mvn/ .mvn/', 'COPY mvnw .', 'RUN chmod +x mvnw']
+          : [];
+
+        content = `${[
+          '# Rewritten by FRA: multi-module Maven — parent POM pre-staged for Docker build',
+          'FROM maven:3.9-eclipse-temurin-17 AS build',
+          'WORKDIR /app',
+          '# Install parent POM into local Maven repo so child module can resolve <parent>',
+          'COPY fra-parent-pom.xml parent-pom.xml',
+          'RUN mvn install -N -q --no-transfer-progress -f parent-pom.xml',
+          ...mvnwLines,
+          'COPY pom.xml .',
+          'COPY src ./src',
+          `RUN ${buildCmd}`,
+          '',
+          'FROM eclipse-temurin:17-jre-alpine',
+          'WORKDIR /app',
+          'COPY --from=build /app/target/*.jar app.jar',
+          'EXPOSE 8080',
+          'ENTRYPOINT ["java", "-jar", "app.jar"]',
+        ].join('\n')}\n`;
+
+        modified = true;
+        logger.info(
+          `Added parent POM install step to ${serviceName}/Dockerfile`,
+        );
+      }
+    }
   }
 
   // ── Remove "npm install -g npm@latest" if present (breaks on Node < 20) ──

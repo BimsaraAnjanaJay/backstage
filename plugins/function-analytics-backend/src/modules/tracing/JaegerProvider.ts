@@ -24,7 +24,15 @@ import {
 
 // Service names to ignore (infrastructure / telemetry services)
 const INFRA_SERVICE_PREFIXES = ['jaeger', 'unknown_service:'];
-const INFRA_SERVICE_EXACT = new Set(['jaeger-query', 'jaeger-all-in-one']);
+const INFRA_SERVICE_EXACT = new Set([
+  'jaeger-query',
+  'jaeger-all-in-one',
+  // Exclude the Backstage process itself — it's the plugin host, not a microservice.
+  // Its outgoing HTTP spans (traffic probing, Jaeger queries) would otherwise appear
+  // as functions with 100% external calls and be flagged as misplaced.
+  'backstage',
+  'backstage-backend',
+]);
 
 /**
  * TraceSourceProvider for Jaeger.
@@ -59,7 +67,11 @@ export class JaegerProvider implements TraceSourceProvider {
     const lookback = `${query.lookbackHours}h`;
 
     if (query.service && query.service !== 'all') {
-      return this.fetchTracesForService(query.service, lookback, query.maxTraces);
+      return this.fetchTracesForService(
+        query.service,
+        lookback,
+        query.maxTraces,
+      );
     }
 
     // Fetch for all services
@@ -132,9 +144,7 @@ export class JaegerProvider implements TraceSourceProvider {
       // Resolve parent span ID from references
       let parentSpanId: string | undefined;
       if (Array.isArray(s.references)) {
-        const childOf = s.references.find(
-          (r: any) => r.refType === 'CHILD_OF',
-        );
+        const childOf = s.references.find((r: any) => r.refType === 'CHILD_OF');
         if (childOf) {
           parentSpanId = childOf.spanID;
         }
@@ -142,8 +152,9 @@ export class JaegerProvider implements TraceSourceProvider {
 
       // Determine span kind from tags
       const rawKind = tags['span.kind'] || '';
-      const spanKind = (['client', 'server', 'producer', 'consumer', 'internal'] as const)
-        .find(k => k === rawKind);
+      const spanKind = (
+        ['client', 'server', 'producer', 'consumer', 'internal'] as const
+      ).find(k => k === rawKind);
 
       return {
         traceId: s.traceID || raw.traceID,

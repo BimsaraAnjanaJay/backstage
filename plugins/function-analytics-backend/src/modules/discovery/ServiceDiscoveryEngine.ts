@@ -60,8 +60,15 @@ async function findDockerfile(
 function isSharedLibOrInfra(name: string, infraPatterns: string[]): boolean {
   const lower = name.toLowerCase();
   if (infraPatterns.some(p => lower.includes(p))) return true;
-  // Maven module names that are shared libs, not deployable services
-  const libPatterns = [
+
+  // Directories whose name starts with a digit are grouping containers (e.g.
+  // "1-services", "2-services") used in tutorial/learning repos — never
+  // standalone deployable microservices.
+  if (/^\d/.test(lower)) return true;
+
+  // Short patterns: only match exact, startsWith, or endsWith to avoid
+  // false positives (e.g. "core" would match "score" with includes).
+  const boundaryPatterns = [
     'common',
     'commons',
     'shared',
@@ -75,10 +82,77 @@ function isSharedLibOrInfra(name: string, infraPatterns: string[]): boolean {
     'dto',
     'mbg',
     'generator',
+    'openapi',
+    'swagger',
+    'proto',
+    'protos',
+    'grpc',
+    'graphql',
+    'schema',
+    'schemas',
+    'sample',
+    'samples',
+    'example',
+    'examples',
+    'analysis',
+    'scripts',
+    'tools',
+    'docs',
+    'documentation',
+    // Grouping / deployment names that are never a single runnable service
+    'services',
+    'microservices',
+    'update',
+    'test',
+    'tests',
+    'testing',
+    // Kubernetes/orchestration — not runnable via plain Docker Compose
+    'kubernetes',
+    'k8s',
+    'helm',
+    'kube',
+    // Client-side / UI — not backend microservices, produce no server-side spans
+    'frontend',
+    'ui',
+    'web',
+    'client',
+    'app',
+    'webapp',
+    'spa',
+    'dashboard',
+    'portal',
+    'admin',
+    'console',
+    // Load generators / traffic simulators — not deployable services
+    'loadgenerator',
+    'load-generator',
+    'loadgen',
+    'load-gen',
+    'locust',
+    'jmeter',
+    'k6',
+    'gatling',
+    'artillery',
   ];
-  return libPatterns.some(
-    p => lower === p || lower.endsWith(`-${p}`) || lower.startsWith(`${p}-`),
-  );
+  if (
+    boundaryPatterns.some(
+      p => lower === p || lower.endsWith(`-${p}`) || lower.startsWith(`${p}-`),
+    )
+  )
+    return true;
+
+  // Longer, unambiguous keywords: safe to match anywhere in the name.
+  const includePatterns = [
+    'quickstart', // akka-quickstart-java
+    'tutorial', // spring-tutorial-xyz
+    'benchmark', // any-benchmark-service
+    'transaction', // spring-transaction-consumer/producer
+    'kubernetes', // any-kubernetes-anything
+    'documentation',
+  ];
+  if (includePatterns.some(p => lower.includes(p))) return true;
+
+  return false;
 }
 
 /**
@@ -127,6 +201,30 @@ async function extractServicesFromCompose(
     'opentelemetry-collector',
   ];
 
+  // Frontend/UI/load-generator service names — skip regardless of build context
+  const FRONTEND_SERVICE_PATTERNS = [
+    'frontend',
+    'ui',
+    'web',
+    'client',
+    'app',
+    'webapp',
+    'spa',
+    'dashboard',
+    'portal',
+    'admin',
+    'console',
+    'loadgenerator',
+    'load-generator',
+    'loadgen',
+    'load-gen',
+    'locust',
+    'jmeter',
+    'k6',
+    'gatling',
+    'artillery',
+  ];
+
   for (const [svcName, svcRaw] of Object.entries(composeData.services)) {
     const svc = svcRaw as any;
 
@@ -134,6 +232,18 @@ async function extractServicesFromCompose(
     if (INFRA_IMAGE_KEYWORDS.some(k => svc.image?.toLowerCase().includes(k)))
       continue;
     if (infraPatterns.some(p => svcName.toLowerCase().includes(p))) continue;
+
+    // Skip frontend/UI services — they produce no backend spans
+    const lowerSvcName = svcName.toLowerCase();
+    if (
+      FRONTEND_SERVICE_PATTERNS.some(
+        p =>
+          lowerSvcName === p ||
+          lowerSvcName.startsWith(`${p}-`) ||
+          lowerSvcName.endsWith(`-${p}`),
+      )
+    )
+      continue;
 
     // Only include services with a build context (i.e., built from source)
     if (!svc.build) continue;
@@ -341,7 +451,7 @@ export async function detectServices(
     }
   }
 
-  // ── Phase 4: Compose-defined services ────────────────────────────────────
+  // ── Phase 4: Compose-defined services (root-level) ───────────────────────
   // Find the root docker-compose file (supports both .yml and .yaml extensions,
   // otel variant, and common subdirectory locations).
   const composeCandidates = [
@@ -355,6 +465,7 @@ export async function detectServices(
     path.join(repoPath, 'deploy', 'docker-compose.yaml'),
   ];
 
+  let foundRootCompose = false;
   for (const composePath of composeCandidates) {
     if (!(await fs.pathExists(composePath))) continue;
 
@@ -372,7 +483,51 @@ export async function detectServices(
         portCounter = Math.max(portCounter, svc.port + 1);
       }
     }
+    foundRootCompose = true;
     break; // only use the first compose file found
+  }
+
+  // ── Phase 5: Depth-1 subdirectory compose search ─────────────────────────
+  // Handles multi-application repos like DeathStarBench where each application
+  // lives in its own subdirectory and has its own docker-compose.yml.
+  // e.g. socialNetwork/docker-compose.yml, hotelReservation/docker-compose.yml
+  //
+  // Only runs when no root-level compose was found (to avoid double-counting).
+  if (!foundRootCompose) {
+    for (const entry of rootEntries) {
+      if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
+      if (isSharedLibOrInfra(entry.name, infraPatterns)) continue;
+
+      const subDir = path.join(repoPath, entry.name);
+      const subComposeCandidates = [
+        path.join(subDir, 'docker-compose.yml'),
+        path.join(subDir, 'docker-compose.yaml'),
+        path.join(subDir, 'docker-compose.otel.yml'),
+      ];
+
+      for (const subComposePath of subComposeCandidates) {
+        if (!(await fs.pathExists(subComposePath))) continue;
+
+        try {
+          const composeServices = await extractServicesFromCompose(
+            subComposePath,
+            repoPath,
+            infraPatterns,
+            portCounter,
+          );
+
+          for (const svc of composeServices) {
+            if (!allServices.has(svc.path)) {
+              allServices.set(svc.path, svc);
+              portCounter = Math.max(portCounter, svc.port + 1);
+            }
+          }
+        } catch {
+          // Non-fatal — continue scanning other subdirectories
+        }
+        break; // only one compose per subdirectory
+      }
+    }
   }
 
   return Array.from(allServices.values());

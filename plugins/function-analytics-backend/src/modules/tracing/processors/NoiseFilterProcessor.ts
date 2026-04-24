@@ -49,10 +49,19 @@ const NOISE_PATTERNS: string[] = [
   'corsmiddleware',
   'jsonparser',
   'request handler',
-  // Low-level I/O and networking
+  // Low-level I/O and networking.
+  // Node.js OTel @opentelemetry/instrumentation-fs emits span names like
+  // "fs realpathSync" (space-separated), which the fallback sanitizer converts
+  // to "fs_realpathSync". Cover dot, underscore, and space variants.
   'fs.',
+  'fs_',
+  'fs ',
   'net.',
+  'net_',
+  'net ',
   'dns.',
+  'dns_',
+  'dns ',
   'dns.lookup',
   'tcp.connect',
   'tcp.',
@@ -110,8 +119,30 @@ const NOISE_EXACT = new Set<string>([
   '/*',
 ]);
 
+/** Regex patterns that are always noise — checked against the raw operation name. */
+const NOISE_REGEX: RegExp[] = [
+  // Wildcard routes: GET /**, POST /**, /** — framework catch-all patterns
+  /^(?:GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\s+\/\*+$/i,
+  /^\/\*+$/,
+];
+
 /** FRA custom tag — if set, the span has an explicit app-level function name. */
 const FRA_FUNCTION_NAME_TAG = 'fra.function_name';
+
+/**
+ * Service names that are never microservices under analysis.
+ * Spans from these services are dropped regardless of their operation name.
+ * This prevents the Backstage backend (the plugin host) from appearing as a
+ * currentService — its outgoing HTTP client spans (traffic probing, Jaeger API
+ * calls) would otherwise show 100% external calls and trigger false relocations.
+ */
+const INFRA_SERVICE_NAMES = new Set([
+  'backstage',
+  'backstage-backend',
+  'jaeger',
+  'jaeger-query',
+  'jaeger-all-in-one',
+]);
 
 /**
  * Filters out infrastructure / framework noise spans.
@@ -142,6 +173,9 @@ export class NoiseFilterProcessor implements SpanProcessor {
   ): NormalizedSpan | undefined {
     const op = span.operationName;
 
+    // Drop spans from the Backstage process itself and other infra services
+    if (INFRA_SERVICE_NAMES.has(span.serviceName)) return undefined;
+
     // If FRA tag explicitly names the function, always keep the span
     const fraName = span.tags[FRA_FUNCTION_NAME_TAG];
     if (fraName && fraName !== 'unknown') return span;
@@ -164,6 +198,12 @@ export class NoiseFilterProcessor implements SpanProcessor {
 
     const lower = name.toLowerCase();
     if (NOISE_EXACT.has(lower)) return true;
+
+    // Node.js OTel SDK emits spans as "fs realpathSync" (space) or "fs_readFileSync"
+    // (underscore after sanitization). Catch both formats.
+    if (/^[a-z][a-z0-9]*[_ ][A-Za-z]/.test(name)) return true;
+
+    if (NOISE_REGEX.some(r => r.test(name))) return true;
 
     return NOISE_PATTERNS.some(p => {
       const lp = p.toLowerCase();

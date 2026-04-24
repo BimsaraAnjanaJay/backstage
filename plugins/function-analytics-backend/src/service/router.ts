@@ -33,6 +33,8 @@ import { createServerWrappers } from '../modules/orchestration/ServerWrapperGene
 import {
   generateDockerCompose,
   injectOtelIntoComposeContent,
+  patchOtelMethodsInclude,
+  patchComposeWithKubernetesEnv,
   JAVA_AGENT_DOWNLOAD,
   OTEL_AGENT_HOST_PATH,
 } from '../modules/orchestration/DockerComposeAdapter';
@@ -43,14 +45,15 @@ import {
   generatePowerShellScript,
   generateBashScript,
 } from '../modules/orchestration/ScriptGenerationAdapter';
-import { analyzeFunctionCalls } from '../modules/analysis/FunctionCallAnalyzer';
 import { applyDecisionLogic } from '../modules/analysis/RelocationDecisionEngine';
+import { enrichWithCodeLocations } from '../modules/analysis/TraceToCodeMapper';
 import {
   buildAllRegistries,
   buildRegistryLookup,
 } from '../modules/static-analysis/FunctionRegistryBuilder';
 import { ProviderRegistry } from '../lib/ProviderRegistry';
 import { FraPipeline } from '../lib/FraPipeline';
+import { SyntheticTraceProvider } from '../modules/tracing/SyntheticTraceGenerator';
 
 /**
  * Dependencies of the function-analytics router
@@ -101,9 +104,20 @@ const DOCKER_TRAFFIC_SERVICE_PATTERNS = [
  */
 function isInfraService(name: string, cfg: any): boolean {
   const infraPatterns = [
-    'mongo', 'redis', 'postgres', 'mysql', 'rabbitmq', 'kafka',
-    'elasticsearch', 'cassandra', 'zookeeper', 'nats', 'etcd',
-    'prometheus', 'grafana', 'zipkin',
+    'mongo',
+    'redis',
+    'postgres',
+    'mysql',
+    'rabbitmq',
+    'kafka',
+    'elasticsearch',
+    'cassandra',
+    'zookeeper',
+    'nats',
+    'etcd',
+    'prometheus',
+    'grafana',
+    'zipkin',
   ];
   const suffixPatterns = ['-db', '-cache', '-queue', '-mq', '-store'];
   const lname = name.toLowerCase();
@@ -259,6 +273,115 @@ async function buildServicesWithRecovery(
   }
 
   return { succeeded, failed };
+}
+
+/**
+ * Discovers API endpoints for a service by querying Spring Actuator mappings
+ * or OpenAPI specs. Returns an array of `{ path, method }` objects ready for
+ * probing. Falls back to an empty array when neither is available.
+ *
+ * Covers:
+ * - Spring Boot Actuator `/actuator/mappings`
+ * - OpenAPI v3 `/v3/api-docs`
+ * - Swagger v2 `/v2/api-docs`
+ */
+async function discoverApiEndpoints(
+  serviceUrl: string,
+): Promise<Array<{ path: string; method: string }>> {
+  const routes: Array<{ path: string; method: string }> = [];
+
+  // ── 1. Spring Boot Actuator mappings ──────────────────────────────────────
+  try {
+    const resp = await fetch(`${serviceUrl}/actuator/mappings`, {
+      timeout: 5000,
+    } as any);
+    if (resp.ok) {
+      const data = (await resp.json()) as any;
+      // Spring Boot 2+ structure: contexts.<name>.mappings.dispatcherServlets.dispatcherServlet
+      for (const ctx of Object.values(data?.contexts || {})) {
+        const servlets =
+          (ctx as any)?.mappings?.dispatcherServlets?.dispatcherServlet || [];
+        for (const mapping of servlets) {
+          const cond = mapping?.details?.requestMappingConditions;
+          if (!cond) continue;
+          const methods: string[] = cond.methods?.length
+            ? cond.methods
+            : ['GET'];
+          let patterns: string[] = [];
+          if (cond.patterns?.length) {
+            patterns = cond.patterns;
+          } else if (cond.patternValues?.length) {
+            patterns = cond.patternValues;
+          }
+          for (const pattern of patterns) {
+            if (pattern.includes('actuator') || pattern.includes('error'))
+              continue;
+            // Replace {pathVar} and wildcards with simple test values
+            const testPath = pattern
+              .replace(/\{[^}]+\}/g, '1')
+              .replace(/\*+/g, '');
+            if (testPath && testPath !== '/') {
+              routes.push({ path: testPath, method: methods[0] || 'GET' });
+            }
+          }
+          if (routes.length >= 50) break;
+        }
+        if (routes.length >= 50) break;
+      }
+    }
+  } catch {
+    // Actuator not available — try OpenAPI
+  }
+
+  // ── 2. OpenAPI v3 /v3/api-docs ────────────────────────────────────────────
+  if (routes.length === 0) {
+    try {
+      const resp = await fetch(`${serviceUrl}/v3/api-docs`, {
+        timeout: 5000,
+      } as any);
+      if (resp.ok) {
+        const spec = (await resp.json()) as any;
+        for (const [routePath, methods] of Object.entries(spec?.paths || {})) {
+          for (const method of Object.keys(methods as any)) {
+            if (!['get', 'post', 'put', 'delete', 'patch'].includes(method))
+              continue;
+            const testPath = routePath.replace(/\{[^}]+\}/g, '1');
+            routes.push({ path: testPath, method: method.toUpperCase() });
+            if (routes.length >= 50) break;
+          }
+          if (routes.length >= 50) break;
+        }
+      }
+    } catch {
+      // OpenAPI v3 not available
+    }
+  }
+
+  // ── 3. Swagger v2 /v2/api-docs ────────────────────────────────────────────
+  if (routes.length === 0) {
+    try {
+      const resp = await fetch(`${serviceUrl}/v2/api-docs`, {
+        timeout: 5000,
+      } as any);
+      if (resp.ok) {
+        const spec = (await resp.json()) as any;
+        for (const [routePath, methods] of Object.entries(spec?.paths || {})) {
+          for (const method of Object.keys(methods as any)) {
+            if (!['get', 'post', 'put', 'delete', 'patch'].includes(method))
+              continue;
+            const testPath = routePath.replace(/\{[^}]+\}/g, '1');
+            routes.push({ path: testPath, method: method.toUpperCase() });
+            if (routes.length >= 50) break;
+          }
+          if (routes.length >= 50) break;
+        }
+      }
+    } catch {
+      // Swagger not available
+    }
+  }
+
+  return routes;
 }
 
 /**
@@ -486,28 +609,68 @@ async function generateTrafficForRepo(
     }
   }
 
+  // ── 2.5. Experiment gateway: POST /run-experiment on any gateway service ──
+  // Detects repos like polyglot-fra-benchmark that expose a gateway endpoint
+  // which triggers properly-labelled internal/external benchmark traffic.
+  logger.info(
+    `🔬 Checking for experiment gateway in ${serviceUrls.length} discovered service(s)...`,
+  );
+  for (const serviceUrl of serviceUrls) {
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 180_000); // 3-min timeout
+      try {
+        const resp = await fetch(`${serviceUrl}/run-experiment`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ rounds: 1, sleep_between_rounds_ms: 0 }),
+          signal: controller.signal,
+        });
+        if (resp.ok) {
+          const data = (await resp.json()) as any;
+          const summaries: any[] = data.summaries || [];
+          const totalExt = summaries.reduce(
+            (a: number, s: any) => a + (s.totalExternalCalls || 0),
+            0,
+          );
+          const totalInt = summaries.reduce(
+            (a: number, s: any) => a + (s.totalInternalCalls || 0),
+            0,
+          );
+          logger.info(
+            `✅ Experiment gateway at ${serviceUrl}: ${totalExt} external + ${totalInt} internal calls`,
+          );
+          return totalExt + totalInt;
+        }
+      } finally {
+        clearTimeout(timer);
+      }
+    } catch {
+      // not an experiment gateway or service unavailable — try next
+    }
+  }
+
   // ── 3. Fallback: probe each service's endpoints ──────────────────────────
   logger.info(
     `🔁 No traffic generator found — probing ${serviceUrls.length} service(s) directly`,
   );
 
   const REQUESTS_PER_SERVICE = Math.max(
-    50,
-    Math.ceil(250 / Math.max(serviceUrls.length, 1)),
+    30,
+    Math.ceil(200 / Math.max(serviceUrls.length, 1)),
   );
   let totalSuccess = 0;
 
   for (const serviceUrl of serviceUrls) {
-    const endpoints: Array<{ path: string; method: string }> = [
-      { path: '/', method: 'GET' },
-      { path: '/health', method: 'GET' },
-    ];
-
-    // Quick readiness wait (up to 30 s)
+    // Quick readiness check (up to 10s — health check in full-analysis pipeline
+    // already waited up to 90s, so we just need a brief confirmation here)
     let ready = false;
-    for (let attempt = 0; attempt < 6; attempt++) {
+    for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        const probe = await fetch(`${serviceUrl}/`, { method: 'GET' });
+        const probe = await fetch(`${serviceUrl}/`, {
+          method: 'GET',
+          ...({ timeout: 4000 } as any),
+        });
         if (probe.status < 500) {
           ready = true;
           break;
@@ -522,9 +685,19 @@ async function generateTrafficForRepo(
       continue;
     }
 
+    // Discover actual API endpoints via Actuator/OpenAPI before falling back to '/'
+    let discoveredEndpoints = await discoverApiEndpoints(serviceUrl);
+    if (discoveredEndpoints.length > 0) {
+      logger.info(
+        `📋 Discovered ${discoveredEndpoints.length} API endpoint(s) for ${serviceUrl} via Actuator/OpenAPI`,
+      );
+    } else {
+      discoveredEndpoints = [{ path: '/', method: 'GET' }];
+    }
+
     let success = 0;
     for (let i = 0; i < REQUESTS_PER_SERVICE; i++) {
-      const ep = endpoints[i % endpoints.length];
+      const ep = discoveredEndpoints[i % discoveredEndpoints.length];
       try {
         const resp = await fetch(`${serviceUrl}${ep.path}`, {
           method: ep.method,
@@ -692,11 +865,9 @@ export async function createRouter(
         'function-registry.json',
       );
       if (!(await fs.pathExists(registryPath))) {
-        return res
-          .status(404)
-          .json({
-            error: 'Registry not found. Run /microservice/detect first.',
-          });
+        return res.status(404).json({
+          error: 'Registry not found. Run /microservice/detect first.',
+        });
       }
       const registries = JSON.parse(await fs.readFile(registryPath, 'utf-8'));
       const lookup = buildRegistryLookup(registries);
@@ -738,7 +909,7 @@ export async function createRouter(
           const rootComposePath = path.join(tmpDir, 'docker-compose.yml');
           if (await fs.pathExists(rootComposePath)) {
             const composeContent = await fs.readFile(rootComposePath, 'utf-8');
-            content = injectOtelIntoComposeContent(composeContent);
+            content = injectOtelIntoComposeContent(composeContent, tmpDir);
           } else {
             content = generateDockerCompose(services);
           }
@@ -1048,7 +1219,13 @@ export async function createRouter(
       );
       const composeFile = 'docker-compose.otel.yml';
 
-      {
+      if (await fs.pathExists(composeFilePath)) {
+        // Repo already ships a docker-compose.otel.yml (e.g. polyglot-fra-benchmark).
+        // Preserve it — it has correct OTel settings, agent mounts, env vars, etc.
+        logger.info(
+          '✅ Repository already has docker-compose.otel.yml — using it as-is',
+        );
+      } else {
         // Support docker-compose.yml, docker-compose.yaml, and compose in docker/ subdir
         const rootComposePath = await findRootComposeFile(microservicesDir);
         if (rootComposePath) {
@@ -1064,7 +1241,7 @@ export async function createRouter(
           const composeContent = await fs.readFile(rootComposePath, 'utf-8');
           await fs.writeFile(
             composeFilePath,
-            injectOtelIntoComposeContent(composeContent),
+            injectOtelIntoComposeContent(composeContent, microservicesDir),
           );
           logger.info(
             '✅ docker-compose.otel.yml written from existing compose + OTEL',
@@ -1150,7 +1327,7 @@ export async function createRouter(
           logger.info(
             `⬇️  Downloading OTel Java agent to ${OTEL_AGENT_HOST_PATH}...`,
           );
-          await new Promise<void>((resolve, reject) => {
+          await new Promise<void>((resolve, _reject) => {
             const dl = spawn(
               'sh',
               [
@@ -1608,10 +1785,32 @@ export async function createRouter(
         `🚀 Starting Jaeger via docker-compose in ${microservicesDir}`,
       );
 
-      // Remove any lingering /jaeger container so docker compose can create it fresh
+      // Remove any lingering Jaeger container(s) so docker compose can create it fresh.
+      // Container name varies per repo (jaeger, jaeger-lightweight, etc.) so we list by filter.
       await new Promise<void>(resolve => {
-        const rm = spawn('docker', ['rm', '-f', 'jaeger'], { shell: true });
-        rm.on('close', () => resolve());
+        const ls = spawn(
+          'docker',
+          ['ps', '-a', '--filter', 'name=jaeger', '--format', '{{.Names}}'],
+          { shell: true },
+        );
+        let names = '';
+        ls.stdout?.on('data', (d: Buffer) => {
+          names += d.toString();
+        });
+        ls.on('close', () => {
+          const toRemove = names
+            .split('\n')
+            .map(n => n.trim())
+            .filter(Boolean);
+          if (toRemove.length === 0) {
+            resolve();
+            return;
+          }
+          const rm = spawn('docker', ['rm', '-f', ...toRemove], {
+            shell: true,
+          });
+          rm.on('close', () => resolve());
+        });
       });
 
       const dockerUp = spawn(
@@ -1775,7 +1974,7 @@ export async function createRouter(
         const rootContent = await fs.readFile(rootComposePath, 'utf-8');
         await fs.writeFile(
           composeFilePath,
-          injectOtelIntoComposeContent(rootContent),
+          injectOtelIntoComposeContent(rootContent, microservicesDir),
         );
       } else {
         await fs.writeFile(composeFilePath, generateDockerCompose(services));
@@ -1783,10 +1982,32 @@ export async function createRouter(
 
       logger.info('📦 Starting all containers...');
 
-      // Remove any lingering /jaeger container so docker compose can create it fresh
+      // Remove any lingering Jaeger container(s) so docker compose can create it fresh.
+      // Container name varies per repo (jaeger, jaeger-lightweight, etc.) so we list by filter.
       await new Promise<void>(resolve => {
-        const rm = spawn('docker', ['rm', '-f', 'jaeger'], { shell: true });
-        rm.on('close', () => resolve());
+        const ls = spawn(
+          'docker',
+          ['ps', '-a', '--filter', 'name=jaeger', '--format', '{{.Names}}'],
+          { shell: true },
+        );
+        let names = '';
+        ls.stdout?.on('data', (d: Buffer) => {
+          names += d.toString();
+        });
+        ls.on('close', () => {
+          const toRemove = names
+            .split('\n')
+            .map(n => n.trim())
+            .filter(Boolean);
+          if (toRemove.length === 0) {
+            resolve();
+            return;
+          }
+          const rm = spawn('docker', ['rm', '-f', ...toRemove], {
+            shell: true,
+          });
+          rm.on('close', () => resolve());
+        });
       });
 
       const dockerUp = spawn(
@@ -1966,10 +2187,32 @@ export async function createRouter(
 
       logger.info('Starting services with docker-compose...');
 
-      // Remove any lingering /jaeger container so docker compose can create it fresh
+      // Remove any lingering Jaeger container(s) so docker compose can create it fresh.
+      // Container name varies per repo (jaeger, jaeger-lightweight, etc.) so we list by filter.
       await new Promise<void>(resolve => {
-        const rm = spawn('docker', ['rm', '-f', 'jaeger'], { shell: true });
-        rm.on('close', () => resolve());
+        const ls = spawn(
+          'docker',
+          ['ps', '-a', '--filter', 'name=jaeger', '--format', '{{.Names}}'],
+          { shell: true },
+        );
+        let names = '';
+        ls.stdout?.on('data', (d: Buffer) => {
+          names += d.toString();
+        });
+        ls.on('close', () => {
+          const toRemove = names
+            .split('\n')
+            .map(n => n.trim())
+            .filter(Boolean);
+          if (toRemove.length === 0) {
+            resolve();
+            return;
+          }
+          const rm = spawn('docker', ['rm', '-f', ...toRemove], {
+            shell: true,
+          });
+          rm.on('close', () => resolve());
+        });
       });
 
       const dockerUp = spawn(
@@ -2188,6 +2431,11 @@ export async function createRouter(
   const jobStore = new Map<string, JobStatus>();
 
   // POST /fra/detect-services - detect microservices in a repository
+  //
+  // If the repo is already cloned locally: detect synchronously and return results.
+  // If the repo needs cloning: kick off a background clone+detect job and return a
+  // jobId immediately so the frontend can poll /fra/detect-job/:jobId/status instead
+  // of waiting for a potentially multi-minute clone to complete synchronously.
   router.post('/fra/detect-services', async (req, res) => {
     try {
       const { repoUrl } = req.body;
@@ -2198,16 +2446,79 @@ export async function createRouter(
       const repoName = extractRepoName(repoUrl);
       const repoPath = config.repoPath(repoName);
 
-      if (!(await fs.pathExists(repoPath))) {
-        await fs.ensureDir(path.dirname(repoPath));
-        await simpleGit().clone(repoUrl, repoPath, [
-          '--depth=1',
-          '--single-branch',
-        ]);
+      // Fast path: repo already cloned — run detection synchronously
+      // Guard: if directory exists but has no .git folder it's a broken/empty clone —
+      // delete it so the slow path re-clones cleanly.
+      if (await fs.pathExists(repoPath)) {
+        const hasGit = await fs.pathExists(path.join(repoPath, '.git'));
+        if (!hasGit) {
+          logger.warn(
+            `${repoPath} exists but has no .git — removing and re-cloning`,
+          );
+          await fs.remove(repoPath);
+        } else {
+          try {
+            const services = await detectServices(repoPath, config);
+            return res.json({ repoName, services, repoPath, cloning: false });
+          } catch (detErr) {
+            logger.error(`Service detection error: ${detErr}`);
+            return res.status(500).json({
+              error: 'Failed to detect services',
+              message:
+                detErr instanceof Error ? detErr.message : String(detErr),
+            });
+          }
+        }
       }
 
-      const services = await detectServices(repoPath, config);
-      return res.json({ repoName, services, repoPath });
+      // Slow path: repo not yet cloned — start background job and return immediately
+      // so large repos (e.g. DeathStarBench ~500 MB) don't time out the HTTP request.
+      const jobId = `detect-${Date.now()}`;
+      const job: JobStatus = {
+        status: 'cloning',
+        progress: 5,
+        currentStep: 'Cloning repository',
+        logs: [`Cloning ${repoUrl}...`],
+      };
+      jobStore.set(jobId, job);
+
+      // Fire-and-forget
+      (async () => {
+        try {
+          await fs.ensureDir(path.dirname(repoPath));
+          await simpleGit().clone(repoUrl, repoPath, [
+            '--depth=1',
+            '--single-branch',
+          ]);
+          job.logs.push('Repository cloned.');
+          job.progress = 70;
+          job.currentStep = 'Detecting services';
+
+          const services = await detectServices(repoPath, config);
+          job.logs.push(`Detected ${services.length} service(s).`);
+          job.status = 'done';
+          job.progress = 100;
+          job.currentStep = 'Complete';
+          job.result = { repoName, services, repoPath, cloning: false };
+        } catch (err) {
+          job.status = 'error';
+          job.error = err instanceof Error ? err.message : String(err);
+          job.currentStep = 'Error';
+          job.logs.push(`Error: ${job.error}`);
+          logger.error(`Background detect-services failed: ${err}`);
+          // Remove partially-cloned directory so next attempt retries cleanly
+          await fs.remove(repoPath).catch(() => {});
+        }
+      })();
+
+      // Return job ID so frontend can poll
+      return res.status(202).json({
+        repoName,
+        cloning: true,
+        jobId,
+        message:
+          'Repository is being cloned. Poll /fra/detect-job/:jobId/status for results.',
+      });
     } catch (error) {
       logger.error(`Error detecting services: ${error}`);
       return res.status(500).json({
@@ -2217,13 +2528,58 @@ export async function createRouter(
     }
   });
 
+  // GET /fra/detect-job/:jobId/status - poll the result of a background detect-services job
+  router.get('/fra/detect-job/:jobId/status', (req, res) => {
+    const { jobId } = req.params;
+    const job = jobStore.get(jobId);
+    if (!job) {
+      return res.status(404).json({ error: 'Job not found' });
+    }
+    // When done, return the full result inline (same shape as synchronous detect-services)
+    if (job.status === 'done' && job.result) {
+      return res.json({ ...job.result, jobStatus: 'done', logs: job.logs });
+    }
+    return res.json({
+      jobStatus: job.status,
+      progress: job.progress,
+      currentStep: job.currentStep,
+      logs: job.logs,
+      error: job.error,
+    });
+  });
+
   // POST /fra/run-full-analysis - kick off a full async analysis pipeline
   router.post('/fra/run-full-analysis', async (req, res) => {
     try {
-      const { repoUrl, lookbackHours, selectedServices } = req.body;
+      const {
+        repoUrl,
+        lookbackHours,
+        selectedServices,
+        externalCallThreshold,
+        confidenceMargin,
+      } = req.body;
       if (!repoUrl) {
         return res.status(400).json({ error: 'repoUrl is required' });
       }
+
+      // Build a job-local config that overrides the analysis thresholds when
+      // the user has changed them in the frontend settings dialog.
+      const jobConfig =
+        externalCallThreshold !== undefined || confidenceMargin !== undefined
+          ? new FraConfig({
+              analysis: {
+                externalCallThreshold:
+                  externalCallThreshold ?? config.externalCallThreshold,
+                confidenceMargin: confidenceMargin ?? config.confidenceMargin,
+                minSampleSizeForHighConfidence:
+                  config.minSampleSizeForHighConfidence,
+                noiseFilter: {
+                  customAllowlist: config.noiseFilterAllowlist,
+                  customBlocklist: config.noiseFilterBlocklist,
+                },
+              },
+            })
+          : config;
 
       const jobId = `job-${Date.now()}`;
       const job: JobStatus = {
@@ -2260,7 +2616,9 @@ export async function createRouter(
 
           // Pre-flight check
           if (!(await isDockerAvailable())) {
-            throw new Error('Docker daemon is not running. Please start Docker and try again.');
+            throw new Error(
+              'Docker daemon is not running. Please start Docker and try again.',
+            );
           }
 
           // Step 2 - Detect services
@@ -2272,27 +2630,47 @@ export async function createRouter(
           addLog(`Detected ${services.length} service(s).`);
 
           // Filter to selected services if specified
-          const activeServices = selectedServices && selectedServices.length > 0
-            ? services.filter((s: any) => selectedServices.includes(s.name))
-            : services;
-          addLog(`Using ${activeServices.length} of ${services.length} detected services.`);
+          const activeServices =
+            selectedServices && selectedServices.length > 0
+              ? services.filter((s: any) => selectedServices.includes(s.name))
+              : services;
+          addLog(
+            `Using ${activeServices.length} of ${services.length} detected services.`,
+          );
 
           // Build function registries for code location mapping
           let registries: any[] = [];
           try {
             registries = await buildAllRegistries(activeServices, repoPath);
-            addLog(`Built function registries: ${registries.reduce((s: number, r: any) => s + r.functions.length, 0)} functions across ${registries.length} services.`);
+            addLog(
+              `Built function registries: ${registries.reduce(
+                (s: number, r: any) => s + r.functions.length,
+                0,
+              )} functions across ${registries.length} services.`,
+            );
           } catch (regErr) {
-            addLog(`Warning: Function registry build failed (non-fatal): ${regErr}`);
+            addLog(
+              `Warning: Function registry build failed (non-fatal): ${regErr}`,
+            );
           }
 
           // Generate catalog-info.yaml
           try {
-            const catalogYaml = buildCatalogInfo(repoName, repoUrl, activeServices, config);
-            await fs.writeFile(path.join(repoPath, 'catalog-info.yaml'), catalogYaml);
+            const catalogYaml = buildCatalogInfo(
+              repoName,
+              repoUrl,
+              activeServices,
+              config,
+            );
+            await fs.writeFile(
+              path.join(repoPath, 'catalog-info.yaml'),
+              catalogYaml,
+            );
             addLog('Generated catalog-info.yaml');
           } catch (catErr) {
-            addLog(`Warning: Catalog info generation failed (non-fatal): ${catErr}`);
+            addLog(
+              `Warning: Catalog info generation failed (non-fatal): ${catErr}`,
+            );
           }
 
           // Step 3 - Fix Dockerfiles + generate compose
@@ -2306,59 +2684,704 @@ export async function createRouter(
             repoPath,
             'docker-compose.otel.yml',
           );
-          if (await fs.pathExists(rootComposePath)) {
-            const rootContent = await fs.readFile(rootComposePath, 'utf-8');
-            await fs.writeFile(
-              composeFilePath,
-              injectOtelIntoComposeContent(rootContent),
+          // Determine whether an existing docker-compose.otel.yml was generated by FRA
+          // (stale — must be regenerated) or shipped by the repo (preserve it).
+          const FRA_COMPOSE_MARKER = '# Auto-generated by FRA plugin';
+          let existingComposeFraGenerated = false;
+          if (await fs.pathExists(composeFilePath)) {
+            const existingContent = await fs
+              .readFile(composeFilePath, 'utf-8')
+              .catch(() => '');
+            existingComposeFraGenerated =
+              existingContent.includes(FRA_COMPOSE_MARKER);
+          }
+
+          if (
+            (await fs.pathExists(composeFilePath)) &&
+            !existingComposeFraGenerated
+          ) {
+            // Repo ships its own docker-compose.otel.yml (e.g. polyglot-fra-benchmark).
+            // Preserve it — it has correct OTel settings, agent mounts, env vars, etc.
+            addLog(
+              'Using existing docker-compose.otel.yml from repository (skipping generation).',
             );
           } else {
-            await fs.writeFile(composeFilePath, generateDockerCompose(activeServices));
+            let composeContent: string;
+            if (await fs.pathExists(rootComposePath)) {
+              const rootContent = await fs.readFile(rootComposePath, 'utf-8');
+              composeContent = injectOtelIntoComposeContent(
+                rootContent,
+                repoPath,
+              );
+            } else {
+              composeContent = generateDockerCompose(activeServices);
+            }
+            // Patch in inter-service env vars from Kubernetes manifests (e.g.
+            // SHIPPING_SERVICE_ADDR) that services need to find each other.
+            composeContent = await patchComposeWithKubernetesEnv(
+              composeContent,
+              repoPath,
+            );
+            await fs.writeFile(
+              composeFilePath,
+              `${FRA_COMPOSE_MARKER}\n${composeContent}`,
+            );
           }
           addLog('Docker compose file ready.');
 
-          // Step 4 - Docker rm jaeger + compose up
+          // Patch OTEL_INSTRUMENTATION_METHODS_INCLUDE for each Java service to use
+          // the service's actual package prefix (e.g. 'auth.*[*]' instead of 'com.*[*]').
+          // This is the key step that enables method-level span collection for repos
+          // that use non-standard Java namespaces (e.g. train-ticket uses 'auth', 'user',
+          // 'travel' as top-level packages — none of which match com/org/io patterns).
+          try {
+            patchOtelMethodsInclude(composeFilePath, repoPath);
+            addLog(
+              'Patched OTEL_INSTRUMENTATION_METHODS_INCLUDE for Java services based on detected package prefixes.',
+            );
+          } catch (patchErr) {
+            addLog(
+              `Warning: OTel methods include patch failed (non-fatal): ${patchErr}`,
+            );
+          }
+
+          // Fix common issues in docker-compose.otel.yml that prevent builds:
+          // 1. dockerfile case-sensitivity: 'Dockerfile' vs 'dockerfile' on Linux
+          // 2. command overrides that reference non-existent files (e.g. otel-server.js)
+          // 3. missing Dockerfile for Java/Go services — generate one automatically
+          try {
+            const composeForFix = yaml.parse(
+              await fs.readFile(composeFilePath, 'utf-8'),
+            );
+            let fixedAny = false;
+            const rootHasMavenParent = await fs.pathExists(
+              path.join(repoPath, 'pom.xml'),
+            );
+            const rootHasGradleParent =
+              (await fs.pathExists(path.join(repoPath, 'build.gradle'))) ||
+              (await fs.pathExists(path.join(repoPath, 'build.gradle.kts')));
+
+            for (const [svcName, svcRaw] of Object.entries(
+              composeForFix.services || {},
+            )) {
+              const svc = svcRaw as any;
+              if (!svc?.build?.context) continue;
+
+              const ctxDir = path.resolve(repoPath, svc.build.context);
+              const declaredDockerfile = svc.build.dockerfile as
+                | string
+                | undefined;
+              const dockerfileName = declaredDockerfile || 'Dockerfile';
+              const fullDockerfilePath = path.join(ctxDir, dockerfileName);
+
+              // ── Fix 1: Dockerfile case sensitivity ────────────────────────
+              if (!(await fs.pathExists(fullDockerfilePath))) {
+                const lower = path.join(ctxDir, dockerfileName.toLowerCase());
+                if (await fs.pathExists(lower)) {
+                  svc.build.dockerfile = dockerfileName.toLowerCase();
+                  fixedAny = true;
+                  continue; // Dockerfile found, nothing more to do for this service
+                }
+
+                // ── Fix 2: Generate missing Dockerfile ───────────────────────
+                const svcHasMaven = await fs.pathExists(
+                  path.join(ctxDir, 'pom.xml'),
+                );
+                const svcHasGradle =
+                  (await fs.pathExists(path.join(ctxDir, 'build.gradle'))) ||
+                  (await fs.pathExists(path.join(ctxDir, 'build.gradle.kts')));
+                const svcHasGo = await fs.pathExists(
+                  path.join(ctxDir, 'go.mod'),
+                );
+                const svcHasNode = await fs.pathExists(
+                  path.join(ctxDir, 'package.json'),
+                );
+
+                if (svcHasMaven && rootHasMavenParent) {
+                  // Multi-module Maven: build from repo root so parent POM + sibling
+                  // modules are on the classpath. Uses `-pl <module> -am` to build only
+                  // the target module and its dependencies.
+                  const moduleDir = path.relative(repoPath, ctxDir);
+                  const generatedDockerfileName = `Dockerfile.fra-${svcName}`;
+                  const generatedDockerfilePath = path.join(
+                    repoPath,
+                    generatedDockerfileName,
+                  );
+                  await fs.writeFile(
+                    generatedDockerfilePath,
+                    `# Auto-generated by FRA plugin for multi-module Maven service: ${svcName}
+FROM maven:3.9-eclipse-temurin-17 AS build
+WORKDIR /workspace
+COPY . .
+RUN mvn install -pl ${moduleDir} -am -DskipTests --no-transfer-progress --batch-mode
+
+FROM eclipse-temurin:17-jre-alpine
+WORKDIR /app
+COPY --from=build /workspace/${moduleDir}/target/*.jar app.jar
+EXPOSE 8080
+ENTRYPOINT ["java", "-javaagent:/tmp/otel-agent.jar", "-jar", "app.jar"]
+`,
+                  );
+                  svc.build.context = '.';
+                  svc.build.dockerfile = generatedDockerfileName;
+                  fixedAny = true;
+                  addLog(
+                    `Generated Dockerfile for multi-module Maven service: ${svcName} (module: ${moduleDir})`,
+                  );
+                } else if (svcHasMaven) {
+                  // Standalone Maven module
+                  await fs.writeFile(
+                    path.join(ctxDir, 'Dockerfile'),
+                    `# Auto-generated by FRA plugin
+FROM maven:3.9-eclipse-temurin-17 AS build
+WORKDIR /app
+COPY pom.xml .
+COPY src ./src
+RUN mvn package -DskipTests --no-transfer-progress --batch-mode
+
+FROM eclipse-temurin:17-jre-alpine
+WORKDIR /app
+COPY --from=build /app/target/*.jar app.jar
+EXPOSE 8080
+ENTRYPOINT ["java", "-javaagent:/tmp/otel-agent.jar", "-jar", "app.jar"]
+`,
+                  );
+                  svc.build.dockerfile = 'Dockerfile';
+                  fixedAny = true;
+                  addLog(
+                    `Generated Dockerfile for standalone Maven service: ${svcName}`,
+                  );
+                } else if (svcHasGradle && rootHasGradleParent) {
+                  // Multi-module Gradle
+                  const moduleDir = path.relative(repoPath, ctxDir);
+                  const generatedDockerfileName = `Dockerfile.fra-${svcName}`;
+                  const generatedDockerfilePath = path.join(
+                    repoPath,
+                    generatedDockerfileName,
+                  );
+                  await fs.writeFile(
+                    generatedDockerfilePath,
+                    `# Auto-generated by FRA plugin for multi-module Gradle service: ${svcName}
+FROM eclipse-temurin:17-jdk-alpine AS build
+WORKDIR /workspace
+COPY . .
+RUN chmod +x gradlew 2>/dev/null; ./gradlew :${svcName}:build -x test --no-daemon 2>/dev/null || gradle :${svcName}:build -x test --no-daemon
+
+FROM eclipse-temurin:17-jre-alpine
+WORKDIR /app
+COPY --from=build /workspace/${moduleDir}/build/libs/*.jar app.jar
+EXPOSE 8080
+ENTRYPOINT ["java", "-javaagent:/tmp/otel-agent.jar", "-jar", "app.jar"]
+`,
+                  );
+                  svc.build.context = '.';
+                  svc.build.dockerfile = generatedDockerfileName;
+                  fixedAny = true;
+                  addLog(
+                    `Generated Dockerfile for multi-module Gradle service: ${svcName}`,
+                  );
+                } else if (svcHasGradle) {
+                  await fs.writeFile(
+                    path.join(ctxDir, 'Dockerfile'),
+                    `# Auto-generated by FRA plugin
+FROM eclipse-temurin:17-jdk-alpine AS build
+WORKDIR /app
+COPY . .
+RUN chmod +x gradlew 2>/dev/null; ./gradlew build -x test --no-daemon 2>/dev/null || gradle build -x test --no-daemon
+
+FROM eclipse-temurin:17-jre-alpine
+WORKDIR /app
+COPY --from=build /app/build/libs/*.jar app.jar
+EXPOSE 8080
+ENTRYPOINT ["java", "-javaagent:/tmp/otel-agent.jar", "-jar", "app.jar"]
+`,
+                  );
+                  svc.build.dockerfile = 'Dockerfile';
+                  fixedAny = true;
+                  addLog(
+                    `Generated Dockerfile for standalone Gradle service: ${svcName}`,
+                  );
+                } else if (svcHasGo) {
+                  await fs.writeFile(
+                    path.join(ctxDir, 'Dockerfile'),
+                    `# Auto-generated by FRA plugin
+FROM golang:1.21-alpine AS build
+WORKDIR /app
+COPY go.mod go.sum* ./
+RUN go mod download
+COPY . .
+RUN go build -o service ./...
+
+FROM alpine:latest
+WORKDIR /app
+COPY --from=build /app/service .
+EXPOSE 8080
+CMD ["./service"]
+`,
+                  );
+                  svc.build.dockerfile = 'Dockerfile';
+                  fixedAny = true;
+                  addLog(`Generated Dockerfile for Go service: ${svcName}`);
+                } else if (svcHasNode) {
+                  await fs.writeFile(
+                    path.join(ctxDir, 'Dockerfile'),
+                    `# Auto-generated by FRA plugin
+FROM node:20-alpine
+WORKDIR /app
+COPY package*.json ./
+RUN npm install --production
+COPY . .
+EXPOSE 3000
+CMD ["node", "index.js"]
+`,
+                  );
+                  svc.build.dockerfile = 'Dockerfile';
+                  fixedAny = true;
+                  addLog(
+                    `Generated Dockerfile for Node.js service: ${svcName}`,
+                  );
+                } else {
+                  // No build system detected — remove the build stanza so Docker doesn't fail.
+                  // The service will be skipped (no image = no container).
+                  delete svc.build;
+                  fixedAny = true;
+                  addLog(
+                    `Warning: No Dockerfile or known build system found for ${svcName} — removing from compose.`,
+                  );
+                }
+              }
+
+              // ── Fix 4: Existing Dockerfile calls `mvn` but base image has no Maven ──
+              // e.g. `FROM eclipse-temurin:17-jdk-alpine` + `RUN mvn package` → exit 127
+              // Fix: replace the build-stage FROM with `maven:3.9-eclipse-temurin-17`
+              // which ships both Maven and a compatible JDK.
+              // Not applied when the Dockerfile uses the Maven wrapper (./mvnw) since
+              // the wrapper downloads Maven itself.
+              if (svc?.build?.context) {
+                const resolvedCtx2 = path.resolve(repoPath, svc.build.context);
+                const dfName2 =
+                  (svc.build.dockerfile as string | undefined) || 'Dockerfile';
+                const dfPath2 = path.join(resolvedCtx2, dfName2);
+                if (await fs.pathExists(dfPath2)) {
+                  const dfContent = await fs.readFile(dfPath2, 'utf-8');
+                  const callsMvn = /^\s*RUN\s+mvn\b/m.test(dfContent);
+                  const usesMvnWrapper = /^\s*RUN\s+\.\/mvnw\b/m.test(
+                    dfContent,
+                  );
+                  const alreadyMavenImage = /^FROM\s+maven:/im.test(dfContent);
+                  if (callsMvn && !usesMvnWrapper && !alreadyMavenImage) {
+                    // Replace JDK-only build-stage image with Maven image
+                    const patched = dfContent.replace(
+                      /^(FROM\s+)(eclipse-temurin:[^\s]+|openjdk:[^\s]+)(\s+AS\s+build\b.*)?$/im,
+                      (_match, _from, _img, asClause) =>
+                        `FROM maven:3.9-eclipse-temurin-17${asClause || ''}`,
+                    );
+                    if (patched !== dfContent) {
+                      await fs.writeFile(dfPath2, patched);
+                      fixedAny = true;
+                      addLog(
+                        `Patched ${dfName2} for ${svcName}: replaced JDK-only build image with maven:3.9-eclipse-temurin-17`,
+                      );
+                    }
+                  }
+                }
+              }
+
+              // ── Fix 3: Invalid command overrides ─────────────────────────
+              if (svc.command && svc?.build?.context) {
+                const resolvedCtx = path.resolve(repoPath, svc.build.context);
+                const cmdParts: string[] = Array.isArray(svc.command)
+                  ? svc.command
+                  : String(svc.command).split(/\s+/);
+                const scriptArg = cmdParts.find(
+                  p =>
+                    p.endsWith('.js') || p.endsWith('.py') || p.endsWith('.sh'),
+                );
+                if (scriptArg) {
+                  const scriptPath = path.join(resolvedCtx, scriptArg);
+                  if (!(await fs.pathExists(scriptPath))) {
+                    delete svc.command;
+                    fixedAny = true;
+                  }
+                }
+              }
+            }
+
+            if (fixedAny) {
+              await fs.writeFile(
+                composeFilePath,
+                yaml.stringify(composeForFix),
+              );
+              addLog('docker-compose.otel.yml pre-flight fixes applied.');
+            }
+          } catch (fixErr) {
+            addLog(`Warning: compose pre-flight fix failed: ${fixErr}`);
+          }
+
+          // Step 4 - Tear down any previously running containers, then compose up
           job.progress = 50;
           job.currentStep = 'Starting containers';
-          addLog('Removing stale jaeger container...');
+
+          // Stop all running containers so ports are freed up for the new stack.
+          // We intentionally only STOP (not remove) to preserve container state/logs.
+          // Named containers that would conflict are removed specifically below.
+          addLog('Stopping all running Docker containers...');
           await new Promise<void>(resolve => {
-            const rm = spawn('docker', ['rm', '-f', 'jaeger'], {
-              shell: true,
+            const list = spawn('docker', ['ps', '-q'], { shell: true });
+            let ids = '';
+            list.stdout?.on('data', (d: Buffer) => {
+              ids += d.toString();
             });
-            rm.on('close', () => resolve());
+            list.on('close', () => {
+              const runningIds = ids
+                .split('\n')
+                .map(s => s.trim())
+                .filter(Boolean);
+              if (runningIds.length === 0) {
+                resolve();
+                return;
+              }
+              const stop = spawn('docker', ['stop', ...runningIds], {
+                shell: true,
+                timeout: 60000,
+              });
+              stop.on('close', () => resolve());
+            });
           });
+
+          // Remove ONLY named containers from our compose file so `docker compose up`
+          // can recreate them without "container name already in use" conflicts.
+          // All other stopped containers are left untouched.
+          try {
+            const composeForNames = yaml.parse(
+              await fs.readFile(composeFilePath, 'utf-8'),
+            );
+            const namedContainers: string[] = Object.values(
+              composeForNames.services || {},
+            )
+              .map((s: any) => s.container_name)
+              .filter(Boolean);
+            if (namedContainers.length > 0) {
+              await new Promise<void>(resolve => {
+                const rm = spawn('docker', ['rm', '-f', ...namedContainers], {
+                  shell: true,
+                  timeout: 30000,
+                });
+                rm.on('close', () => resolve());
+              });
+            }
+          } catch {
+            /* best-effort */
+          }
+
+          // Bring down compose-managed stacks to clean up Docker networks
+          if (await fs.pathExists(composeFilePath)) {
+            await new Promise<void>(resolve => {
+              const down = spawn(
+                'docker compose',
+                ['-f', 'docker-compose.otel.yml', 'down', '--remove-orphans'],
+                { cwd: repoPath, shell: true, timeout: 60000 },
+              );
+              down.on('close', () => resolve());
+            });
+          }
+          if (await fs.pathExists(rootComposePath)) {
+            await new Promise<void>(resolve => {
+              const down = spawn(
+                'docker compose',
+                ['-f', 'docker-compose.yml', 'down', '--remove-orphans'],
+                { cwd: repoPath, shell: true, timeout: 60000 },
+              );
+              down.on('close', () => resolve());
+            });
+          }
+          addLog('Container cleanup complete.');
+
+          try {
+            const agentDir = path.dirname(OTEL_AGENT_HOST_PATH);
+            await fs.ensureDir(agentDir);
+            if (!(await fs.pathExists(OTEL_AGENT_HOST_PATH))) {
+              addLog(
+                `Downloading OTel Java agent to ${OTEL_AGENT_HOST_PATH}...`,
+              );
+              await new Promise<void>(resolve => {
+                const dl = spawn(
+                  'sh',
+                  [
+                    '-c',
+                    `wget -qO '${OTEL_AGENT_HOST_PATH}' '${JAVA_AGENT_DOWNLOAD}' 2>/dev/null || ` +
+                      `curl -sLo '${OTEL_AGENT_HOST_PATH}' '${JAVA_AGENT_DOWNLOAD}'`,
+                  ],
+                  { shell: false },
+                );
+                dl.on('close', code => {
+                  if (code === 0)
+                    addLog('OTel Java agent downloaded successfully.');
+                  else
+                    addLog(
+                      'Warning: OTel Java agent download failed — Java tracing may not work.',
+                    );
+                  resolve();
+                });
+                dl.on('error', () => resolve());
+              });
+            } else {
+              addLog(
+                `OTel Java agent already cached at ${OTEL_AGENT_HOST_PATH}`,
+              );
+            }
+          } catch {
+            addLog(
+              'Warning: Could not ensure OTel Java agent — Java tracing may not work.',
+            );
+          }
+
           addLog('Starting docker compose...');
           try {
             await new Promise<void>((resolve, reject) => {
               const dockerUp = spawn(
                 'docker compose',
-                ['-f', 'docker-compose.otel.yml', 'up', '-d', '--build', '--remove-orphans'],
+                [
+                  '-f',
+                  'docker-compose.otel.yml',
+                  'up',
+                  '-d',
+                  '--build',
+                  '--remove-orphans',
+                ],
                 { cwd: repoPath, shell: true, timeout: 300000 },
               );
               let stderr = '';
-              dockerUp.stderr?.on('data', (data: Buffer) => { stderr += data.toString(); });
+              // Stream stderr line-by-line to the job log so build errors are visible
+              dockerUp.stderr?.on('data', (data: Buffer) => {
+                const lines = data.toString().split('\n');
+                for (const line of lines) {
+                  const trimmed = line.trim();
+                  if (trimmed) {
+                    stderr += `${trimmed}\n`;
+                    // Only forward lines that look like errors or warnings (skip progress bars)
+                    if (
+                      /error|failed|warning|warn|fatal/i.test(trimmed) &&
+                      !/^\s*#/.test(trimmed)
+                    ) {
+                      addLog(`[compose] ${trimmed}`);
+                    }
+                  }
+                }
+              });
+              dockerUp.stdout?.on('data', (data: Buffer) => {
+                const lines = data.toString().split('\n');
+                for (const line of lines) {
+                  const trimmed = line.trim();
+                  if (
+                    trimmed &&
+                    /started|created|built|pulling|pulled/i.test(trimmed)
+                  ) {
+                    addLog(`[compose] ${trimmed}`);
+                  }
+                }
+              });
               dockerUp.on('close', code => {
-                if (code !== 0) reject(new Error(`docker compose up failed: ${stderr}`));
+                if (code !== 0)
+                  reject(
+                    new Error(
+                      `docker compose up failed (exit ${code}): ${stderr.slice(
+                        -2000,
+                      )}`,
+                    ),
+                  );
                 else resolve();
               });
             });
-            addLog('All containers started successfully.');
+            addLog('docker compose up completed.');
+            // Log which containers are actually running
+            await new Promise<void>(resolve => {
+              const ps = spawn(
+                'docker',
+                [
+                  'compose',
+                  '-f',
+                  'docker-compose.otel.yml',
+                  'ps',
+                  '--format',
+                  'table {{.Name}}\t{{.Status}}\t{{.Ports}}',
+                ],
+                { cwd: repoPath, shell: true },
+              );
+              let psOut = '';
+              ps.stdout?.on('data', (d: Buffer) => {
+                psOut += d.toString();
+              });
+              ps.on('close', () => {
+                if (psOut.trim())
+                  addLog(`Running containers:\n${psOut.trim()}`);
+                resolve();
+              });
+            });
           } catch (composeErr) {
-            addLog(`Full compose up failed: ${composeErr instanceof Error ? composeErr.message : String(composeErr)}`);
+            addLog(
+              `Full compose up failed: ${
+                composeErr instanceof Error
+                  ? composeErr.message
+                  : String(composeErr)
+              }`,
+            );
             addLog('Attempting per-service recovery...');
             try {
-              await buildServicesWithRecovery('docker-compose.otel.yml', repoPath, activeServices, logger);
+              await buildServicesWithRecovery(
+                repoPath,
+                'docker-compose.otel.yml',
+                logger,
+              );
               addLog('Per-service recovery completed.');
             } catch (recoveryErr) {
-              addLog(`Warning: Per-service recovery also had issues: ${recoveryErr}`);
+              addLog(
+                `Warning: Per-service recovery also had issues: ${recoveryErr}`,
+              );
             }
           }
 
-          // Step 5 - Wait for services
+          // Step 5 - Wait for services + health checks
           job.progress = 60;
           job.currentStep = 'Waiting for services to start';
           addLog('Waiting 15s for services to initialize...');
           await new Promise(r => setTimeout(r, 15000));
+
+          // Verify Jaeger is accessible before proceeding.
+          {
+            const jaegerHealthUrl = `${config.jaegerBaseUrl}/services`;
+            let jaegerReady = false;
+            for (let attempt = 1; attempt <= 6 && !jaegerReady; attempt++) {
+              try {
+                const probe = await fetch(jaegerHealthUrl, {
+                  timeout: 5000,
+                } as any);
+                if (probe.ok) {
+                  jaegerReady = true;
+                  break;
+                }
+              } catch {
+                // not yet
+              }
+              if (!jaegerReady && attempt < 6) {
+                addLog(
+                  `Jaeger not ready yet (attempt ${attempt}/6), retrying in 5s...`,
+                );
+                await new Promise(r => setTimeout(r, 5000));
+              }
+            }
+            if (jaegerReady) {
+              addLog('Jaeger is healthy and responding.');
+            } else {
+              addLog(
+                'Warning: Jaeger did not respond after retries. Analysis may return no results.',
+              );
+            }
+          }
+
+          // Wait for all application services to be health-ready before generating traffic.
+          // This is critical for slow-starting services like Spring Boot with the OTel Java
+          // agent — if traffic starts before the service is ready, internal generators crash
+          // (ECONNREFUSED) and take the whole traffic-generation chain down.
+          {
+            const composeForHealth = yaml.parse(
+              await fs.readFile(composeFilePath, 'utf-8'),
+            );
+            const HEALTH_SKIP = [
+              'jaeger',
+              'zipkin',
+              'prometheus',
+              'grafana',
+              'otel-collector',
+              'opentelemetry-collector',
+              'mongo',
+              'redis',
+              'postgres',
+              'mysql',
+              'kafka',
+              'rabbitmq',
+              'zookeeper',
+            ];
+            // Probe ports only — any HTTP response (even 404) means the server is up.
+            // We try several common health paths but accept ANY status code as "ready"
+            // because many services don't implement /health at all.
+            const HEALTH_PATHS = [
+              '/health',
+              '/healthz',
+              '/actuator/health',
+              '/ping',
+              '/status',
+              '/',
+            ];
+            const svcPorts: Array<{ name: string; port: string }> = [];
+            for (const [svcName, svcRaw] of Object.entries(
+              composeForHealth.services || {},
+            )) {
+              const svc = svcRaw as any;
+              const imgLower = (svc.image || '').toLowerCase();
+              if (
+                HEALTH_SKIP.some(
+                  p =>
+                    svcName.toLowerCase().includes(p) || imgLower.includes(p),
+                )
+              )
+                continue;
+              if (Array.isArray(svc.ports) && svc.ports.length > 0) {
+                const hostPort = String(svc.ports[0]).split(':')[0];
+                svcPorts.push({ name: svcName, port: hostPort });
+              }
+            }
+
+            /** Returns true if ANY HTTP request to the port gets a response (any status). */
+            const isPortResponding = async (port: string): Promise<boolean> => {
+              for (const p of HEALTH_PATHS) {
+                try {
+                  await fetch(`http://localhost:${port}${p}`, {
+                    timeout: 3000,
+                  } as any);
+                  return true; // got any HTTP response → server is up
+                } catch (e: any) {
+                  // ECONNREFUSED / ECONNRESET / timeout → server not up yet; try next path
+                  if (e?.code === 'ECONNREFUSED') break; // no point trying other paths on same port
+                }
+              }
+              return false;
+            };
+
+            if (svcPorts.length > 0) {
+              addLog(
+                `Waiting for ${svcPorts.length} application service(s) to be ready...`,
+              );
+              // Up to 90s total: check every 5s
+              for (let attempt = 1; attempt <= 18; attempt++) {
+                const results = await Promise.all(
+                  svcPorts.map(async ({ name, port }) => ({
+                    name,
+                    ok: await isPortResponding(port),
+                  })),
+                );
+                const notReady = results.filter(r => !r.ok).map(r => r.name);
+                if (notReady.length === 0) {
+                  addLog('All application services are healthy and ready.');
+                  break;
+                }
+                if (attempt < 18) {
+                  addLog(
+                    `Services not ready yet (${notReady.join(
+                      ', ',
+                    )}), retrying in 5s... (${attempt}/18)`,
+                  );
+                  await new Promise(r => setTimeout(r, 5000));
+                } else {
+                  addLog(
+                    `Warning: Some services did not become healthy after 90s: ${notReady.join(
+                      ', ',
+                    )}. Proceeding anyway.`,
+                  );
+                }
+              }
+            }
+          }
 
           // Step 6 - Generate traffic
           job.status = 'tracing';
@@ -2368,23 +3391,57 @@ export async function createRouter(
           const serviceUrls: string[] = [];
           const composeContent = await fs.readFile(composeFilePath, 'utf-8');
           const composeData = yaml.parse(composeContent);
+
+          // Infrastructure image patterns that should NOT be probed for HTTP traffic
+          const INFRA_TRAFFIC_SKIP = [
+            'jaeger',
+            'zipkin',
+            'openzipkin',
+            'prometheus',
+            'grafana',
+            'otel/opentelemetry-collector',
+            'opentelemetry-collector',
+            'mongo',
+            'redis',
+            'postgres',
+            'mysql',
+            'kafka',
+            'rabbitmq',
+          ];
           for (const [svcName, svcRaw] of Object.entries(
             composeData.services || {},
           )) {
             const svc = svcRaw as any;
-            if (svcName === 'jaeger' || svc.image?.includes('jaeger')) continue;
+            const imgLower = (svc.image || '').toLowerCase();
+            if (
+              INFRA_TRAFFIC_SKIP.some(
+                p => svcName.toLowerCase().includes(p) || imgLower.includes(p),
+              )
+            )
+              continue;
             if (Array.isArray(svc.ports) && svc.ports.length > 0) {
               const hostPort = String(svc.ports[0]).split(':')[0];
               serviceUrls.push(`http://localhost:${hostPort}`);
             }
           }
           if (serviceUrls.length === 0) {
-            addLog('Warning: No service URLs discovered from compose ports. Will attempt fallback probing.');
+            addLog(
+              'Warning: No service URLs discovered from compose ports. Will attempt fallback probing.',
+            );
           }
-          const trafficCount = await generateTrafficForRepo(repoPath, serviceUrls, logger, 'docker-compose.otel.yml');
-          addLog(`Traffic generation complete: ${trafficCount} successful requests.`);
+          const trafficCount = await generateTrafficForRepo(
+            repoPath,
+            serviceUrls,
+            logger,
+            'docker-compose.otel.yml',
+          );
+          addLog(
+            `Traffic generation complete: ${trafficCount} successful requests.`,
+          );
           if (trafficCount === 0) {
-            addLog('Warning: Zero traffic generated. Analysis may have limited data.');
+            addLog(
+              'Warning: Zero traffic generated. Analysis may have limited data.',
+            );
           }
 
           // Step 7 - Wait for traces to flush
@@ -2398,15 +3455,152 @@ export async function createRouter(
           job.progress = 90;
           job.currentStep = 'Analyzing traces';
           addLog('Running FraPipeline analysis...');
-          const registry = ProviderRegistry.fromConfig(config);
-          const pipeline = new FraPipeline(registry, config, logger);
+          const registry = ProviderRegistry.fromConfig(jobConfig);
+          const pipeline = new FraPipeline(registry, jobConfig, logger);
           const lookback = lookbackHours || 2;
-          const results = await pipeline.analyze({
-            service: 'all',
-            lookbackHours: lookback,
-            maxTraces: config.maxTracesPerService,
-          }, registries);
-          job.result = { services, results, repoName, repoUrl };
+          const totalRegistryFunctions = registries.reduce(
+            (s: number, r: any) => s + r.functions.length,
+            0,
+          );
+          addLog(
+            `[checkpoint-1] Registry: ${registries.length} services, ${totalRegistryFunctions} functions total.`,
+          );
+          let results: import('../lib/types').RelocationResult[];
+          try {
+            results = await pipeline.analyze(
+              {
+                service: 'all',
+                lookbackHours: lookback,
+                maxTraces: jobConfig.maxTracesPerService,
+              },
+              registries,
+            );
+
+            addLog(
+              `[checkpoint-2] Real trace analysis returned ${results.length} results.`,
+            );
+
+            // augmentWithStaticCoverage always fills results with every registry
+            // function at sampleCount=0 when Jaeger has no microservice spans.
+            // results.length is therefore never 0 — checking it is wrong.
+            // Instead check whether ANY function has real trace observations.
+            const hasRealTraceData = results.some(
+              (r: any) => r.sampleCount > 0,
+            );
+            addLog(
+              `[checkpoint-2b] hasRealTraceData=${hasRealTraceData} (${
+                results.filter((r: any) => r.sampleCount > 0).length
+              } functions with observations).`,
+            );
+
+            if (!hasRealTraceData && totalRegistryFunctions > 0) {
+              throw new Error(
+                'No microservice traces found — all functions have 0 observations (Jaeger has only infra spans).',
+              );
+            }
+          } catch (pipelineErr) {
+            // Live tracing backend unreachable or empty — fall back to synthetic trace analysis.
+            // SyntheticTraceProvider generates realistic call patterns from the static
+            // function registry so the relocation engine can still produce useful results.
+            addLog(
+              `[checkpoint-3] Trace analysis failed or empty: ${
+                pipelineErr instanceof Error
+                  ? pipelineErr.message
+                  : String(pipelineErr)
+              }`,
+            );
+            addLog('Falling back to synthetic trace analysis...');
+            try {
+              addLog(
+                `[checkpoint-4] Generating synthetic traces for ${totalRegistryFunctions} functions across ${registries.length} services.`,
+              );
+              const syntheticRegistry = ProviderRegistry.fromConfig(jobConfig);
+              syntheticRegistry.registerTraceSource(
+                new SyntheticTraceProvider(registries),
+              );
+              const syntheticPipeline = new FraPipeline(
+                syntheticRegistry,
+                jobConfig,
+                logger,
+              );
+              results = await syntheticPipeline.analyze(
+                {
+                  service: 'all',
+                  lookbackHours: 1,
+                  maxTraces: jobConfig.maxTracesPerService,
+                },
+                registries,
+              );
+              addLog(
+                `[checkpoint-5] Synthetic analysis complete: ${results.length} recommendations.`,
+              );
+              job.result = {
+                services,
+                results,
+                repoName,
+                repoUrl,
+                tracingAvailable: false,
+                syntheticTraces: true,
+              };
+              job.status = 'done';
+              job.progress = 100;
+              job.currentStep =
+                'Complete (synthetic trace analysis — no live backend)';
+              addLog(
+                `Full analysis complete using synthetic traces (${results.length} recommendations).`,
+              );
+            } catch (syntheticErr) {
+              // Last-resort: zero-call static-only output
+              addLog(
+                `[checkpoint-6] Synthetic analysis failed: ${
+                  syntheticErr instanceof Error
+                    ? syntheticErr.message
+                    : String(syntheticErr)
+                }. Returning static-only results.`,
+              );
+              const zeroAnalysis = registries.flatMap((reg: any) =>
+                reg.functions.map((fn: any) => ({
+                  functionName: fn.name,
+                  currentService: reg.service,
+                  internalCalls: 0,
+                  externalCalls: 0,
+                  dominantCaller: 'none',
+                  dominantPercent: 0,
+                  avgInternalLatency: 0,
+                  avgExternalLatency: 0,
+                  p95InternalLatency: 0,
+                  p95ExternalLatency: 0,
+                  p99InternalLatency: 0,
+                  p99ExternalLatency: 0,
+                  sampleCount: 0,
+                  callerServices: {},
+                  patternStability: 1.0,
+                  staticCoverage: 'covered' as const,
+                })),
+              );
+              const zeroDecisions = applyDecisionLogic(zeroAnalysis, jobConfig);
+              results = enrichWithCodeLocations(zeroDecisions, registries);
+              job.result = {
+                services,
+                results,
+                repoName,
+                repoUrl,
+                tracingAvailable: false,
+              };
+              job.status = 'done';
+              job.progress = 100;
+              job.currentStep = 'Complete (static analysis only — no traces)';
+              addLog('Full analysis complete (static analysis only).');
+            }
+            return;
+          }
+          job.result = {
+            services,
+            results,
+            repoName,
+            repoUrl,
+            tracingAvailable: true,
+          };
 
           // Done
           job.status = 'done';
@@ -2415,8 +3609,7 @@ export async function createRouter(
           addLog('Full analysis complete.');
         } catch (err) {
           job.status = 'error';
-          job.error =
-            err instanceof Error ? err.message : String(err);
+          job.error = err instanceof Error ? err.message : String(err);
           job.currentStep = 'Error';
           addLog(`Error: ${job.error}`);
         }

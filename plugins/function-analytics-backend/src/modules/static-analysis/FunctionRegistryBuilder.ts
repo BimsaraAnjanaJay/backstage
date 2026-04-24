@@ -61,7 +61,7 @@ const SKIP_DIRS = new Set([
 ]);
 
 // ─── Framework base classes / known infra classes to skip ───────────────────
-// When a Java class extends one of these, its methods are framework, not app code.
+// When a Java class extends OR implements one of these, its methods are framework, not app code.
 const JAVA_FRAMEWORK_BASES = new Set([
   'HttpServlet',
   'GenericServlet',
@@ -73,6 +73,13 @@ const JAVA_FRAMEWORK_BASES = new Set([
   'CommandLineRunner',
   'AbstractHealthIndicator',
   'HealthIndicator',
+  // Bean lifecycle interfaces
+  'BeanPostProcessor',
+  'BeanFactoryPostProcessor',
+  'InitializingBean',
+  'DisposableBean',
+  // Message handling
+  'MessageListener',
 ]);
 
 // ─── Python decorators that mark framework handlers (not app logic) ──────────
@@ -115,6 +122,41 @@ const NODE_SKIP_NAMES = new Set([
   'afterEach',
   'beforeAll',
   'afterAll',
+  // JS keywords that appear before ( but are not method names
+  'super',
+  'catch',
+  'try',
+  'throw',
+  'typeof',
+  'instanceof',
+  'delete',
+  'switch',
+  // JS global built-ins — never application function names
+  'Date',
+  'Error',
+  'Promise',
+  'Map',
+  'Set',
+  'Array',
+  'Object',
+  'Math',
+  'JSON',
+  'console',
+  'Buffer',
+  'setTimeout',
+  'setInterval',
+  'clearTimeout',
+  'clearInterval',
+  'Symbol',
+  'RegExp',
+  'Number',
+  'String',
+  'Boolean',
+  'Function',
+  'parseInt',
+  'parseFloat',
+  'isNaN',
+  'isFinite',
 ]);
 
 // ─── Common method names that are always framework boilerplate ───────────────
@@ -138,6 +180,20 @@ const COMMON_SKIP_METHOD_NAMES = new Set([
   'tearDown',
   'setUpClass',
   'tearDownClass',
+  // Java entry points and lifecycle — never business logic
+  'main',
+  'run',
+  'afterPropertiesSet',
+  'destroy',
+  'postProcessBeforeInitialization',
+  'postProcessAfterInitialization',
+  'postProcessBeforeDestruction',
+  // Akka actor framework
+  'createReceive',
+  'preStart',
+  'postStop',
+  'preRestart',
+  'postRestart',
 ]);
 
 /** Recursively collect all source files matching an extension list. */
@@ -198,13 +254,21 @@ async function extractJavaFunctions(
       continue;
     }
 
-    // Detect class name and base class
+    // Skip @SpringBootApplication classes — they only contain main() and @Bean factory methods
+    if (/@SpringBootApplication\b/.test(src)) continue;
+
+    // Detect class name, base class, and implemented interfaces
     const classMatch = src.match(
-      /(?:public\s+)?(?:abstract\s+)?class\s+(\w+)(?:\s+extends\s+(\w+))?/,
+      /(?:public\s+)?(?:abstract\s+)?class\s+(\w+)(?:\s+extends\s+(\w+))?(?:\s+implements\s+([\w,\s]+?))?(?:\s*\{)/,
     );
     const className = classMatch?.[1] || path.basename(file, '.java');
     const baseClass = classMatch?.[2] || '';
+    const implementedIfaces = (classMatch?.[3] || '')
+      .split(',')
+      .map(s => s.trim())
+      .filter(Boolean);
     if (JAVA_FRAMEWORK_BASES.has(baseClass)) continue;
+    if (implementedIfaces.some(i => JAVA_FRAMEWORK_BASES.has(i))) continue;
 
     // Skip if this looks like a pure config/entity class (heuristic)
     if (
@@ -214,6 +278,14 @@ async function extractJavaFunctions(
     )
       continue;
 
+    // Build set of @Bean-annotated method names to exclude (bean factories are infra, not logic)
+    const beanMethodNames = new Set<string>();
+    const beanRe =
+      /@Bean\b[\s\S]{0,300}?(?:public|protected)\s+(?:static\s+)?(?:[\w<>\[\],\s]+?)\s+(\w+)\s*\(/gm;
+    for (const bm of src.matchAll(beanRe)) {
+      if (bm[1]) beanMethodNames.add(bm[1]);
+    }
+
     // Extract public/protected non-static methods
     // Pattern: optional-annotations public/protected [static] returnType methodName(
     const methodRe =
@@ -222,6 +294,7 @@ async function extractJavaFunctions(
       const methodName = match[1];
       if (!methodName) continue;
       if (COMMON_SKIP_METHOD_NAMES.has(methodName)) continue;
+      if (beanMethodNames.has(methodName)) continue;
       // Skip getters/setters
       if (/^(?:get|set|is)[A-Z]/.test(methodName)) continue;
       results.push({
@@ -287,12 +360,60 @@ async function extractNodeFunctions(
       results.push({ name, file: rel, language });
     }
 
+    // CommonJS exported functions: exports.myFunc = ... or module.exports.myFunc = ...
+    // Catches controller-style patterns: exports.getAllUsers = async (req, res) => {...}
+    const exportsRe = /(?:module\.)?exports\.([A-Za-z_$][A-Za-z0-9_$]*)\s*=/g;
+    for (const m of stripped.matchAll(exportsRe)) {
+      const name = m[1];
+      if (NODE_SKIP_NAMES.has(name) || COMMON_SKIP_METHOD_NAMES.has(name))
+        continue;
+      results.push({ name, file: rel, language });
+    }
+
+    // Object method shorthand inside module.exports = { ... }
+    // Catches: module.exports = { async checkUserExists(userId) { ... } }
+    if (/module\.exports\s*=\s*\{/.test(stripped)) {
+      const objMethodRe =
+        /^\s+(?:async\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*\([^)]*\)\s*\{/gm;
+      for (const m of stripped.matchAll(objMethodRe)) {
+        const name = m[1];
+        if (
+          [
+            'if',
+            'for',
+            'while',
+            'switch',
+            'catch',
+            'function',
+            'class',
+            'return',
+          ].includes(name)
+        )
+          continue;
+        if (NODE_SKIP_NAMES.has(name) || COMMON_SKIP_METHOD_NAMES.has(name))
+          continue;
+        results.push({ name, file: rel, language });
+      }
+    }
+
+    // Object property arrow functions: propName: async (...) => {
+    // Catches patterns like: save: async (data) => { ... }
+    const objPropArrowRe =
+      /^\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*:\s*(?:async\s+)?(?:\([^)]*\)|[A-Za-z_$]\w*)\s*=>/gm;
+    for (const m of stripped.matchAll(objPropArrowRe)) {
+      const name = m[1];
+      if (NODE_SKIP_NAMES.has(name) || COMMON_SKIP_METHOD_NAMES.has(name))
+        continue;
+      results.push({ name, file: rel, language });
+    }
+
     // Class methods: [optional async] methodName(
     const classMethodRe =
       /(?:async\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*\((?:[^)]*)\)\s*\{/g;
-    // Also capture TypeScript class method signatures
+    // TypeScript class method signatures — require at least one explicit keyword modifier
+    // so bare function calls like pino(), Date(), super() are not captured.
     const tsMethodRe =
-      /(?:public|private|protected|async|static|\s)+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(/g;
+      /(?:(?:public|private|protected|async|static)\s+)+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(/g;
 
     // Detect if file has class definitions
     if (/\bclass\s+\w+/.test(stripped)) {
@@ -305,9 +426,16 @@ async function extractNodeFunctions(
             'while',
             'switch',
             'catch',
+            'super',
+            'try',
+            'throw',
             'function',
             'class',
             'return',
+            'new',
+            'delete',
+            'typeof',
+            'instanceof',
           ].includes(name)
         )
           continue;
@@ -329,6 +457,11 @@ async function extractNodeFunctions(
             'if',
             'for',
             'while',
+            'switch',
+            'catch',
+            'super',
+            'try',
+            'throw',
             'function',
             'class',
             'import',
@@ -338,6 +471,9 @@ async function extractNodeFunctions(
             'let',
             'var',
             'new',
+            'delete',
+            'typeof',
+            'instanceof',
             'async',
             'await',
             'static',
@@ -379,7 +515,9 @@ async function extractPythonFunctions(
     if (
       rel.includes('test_') ||
       rel.includes('_test') ||
-      rel.includes('conftest')
+      rel.includes('conftest') ||
+      rel.endsWith('_pb2.py') ||
+      rel.endsWith('_pb2_grpc.py')
     )
       continue;
 
@@ -568,17 +706,94 @@ export async function buildServiceRegistry(
 }
 
 /**
+ * Scans a repo for benchmark-style function config files (functions.json) that
+ * list virtual functions by name + host_service. These are data-driven functions
+ * that cannot be found by static AST scanning (e.g. polyglot-fra-benchmark where
+ * function names are path parameters to a generic controller, not static methods).
+ *
+ * Recognised format:
+ *   { "functions": [{ "name": "...", "host_service": "...", ... }] }
+ *
+ * Returns a map of serviceName (lowercased) → Set<functionName>.
+ */
+async function extractBenchmarkFunctions(
+  repoRoot: string,
+): Promise<Map<string, RegistryFunction[]>> {
+  const result = new Map<string, RegistryFunction[]>();
+
+  const candidates = [
+    'benchmark/functions.json',
+    'functions.json',
+    'config/functions.json',
+    'data/functions.json',
+  ];
+
+  for (const rel of candidates) {
+    const fullPath = path.join(repoRoot, rel);
+    if (!(await fs.pathExists(fullPath))) continue;
+    try {
+      const raw = await fs.readFile(fullPath, 'utf-8');
+      const parsed = JSON.parse(raw);
+      const funcs: any[] = Array.isArray(parsed)
+        ? parsed
+        : parsed?.functions || [];
+      for (const fn of funcs) {
+        const name: string = fn.name || fn.function_name;
+        const svc: string = fn.host_service || fn.service || fn.serviceName;
+        if (!name || !svc) continue;
+        const svcKey = svc.toLowerCase();
+        if (!result.has(svcKey)) result.set(svcKey, []);
+        result.get(svcKey)!.push({
+          name,
+          file: rel,
+          language: 'unknown',
+        });
+      }
+      break; // use the first matching file
+    } catch {
+      // not valid JSON or wrong format — try next
+    }
+  }
+
+  return result;
+}
+
+/**
  * Builds registries for all discovered services in parallel.
+ *
+ * Also scans for benchmark-style function config files (functions.json) and
+ * merges any virtual functions listed there into the appropriate service registry.
+ * This ensures data-driven functions (like those in polyglot-fra-benchmark)
+ * appear in results even before traces are collected.
  */
 export async function buildAllRegistries(
   services: DiscoveredService[],
   repoRoot: string,
 ): Promise<ServiceFunctionRegistry[]> {
-  return Promise.all(
-    services.map(svc =>
-      buildServiceRegistry(svc, path.join(repoRoot, svc.path)),
+  const [registries, benchmarkFns] = await Promise.all([
+    Promise.all(
+      services.map(svc =>
+        buildServiceRegistry(svc, path.join(repoRoot, svc.path)),
+      ),
     ),
-  );
+    extractBenchmarkFunctions(repoRoot),
+  ]);
+
+  // Merge benchmark virtual functions into matching registries
+  if (benchmarkFns.size > 0) {
+    for (const reg of registries) {
+      const extra = benchmarkFns.get(reg.service.toLowerCase());
+      if (extra && extra.length > 0) {
+        const existingNames = new Set(reg.functions.map(f => f.name));
+        const toAdd = extra.filter(f => !existingNames.has(f.name));
+        if (toAdd.length > 0) {
+          reg.functions = [...reg.functions, ...toAdd];
+        }
+      }
+    }
+  }
+
+  return registries;
 }
 
 /**

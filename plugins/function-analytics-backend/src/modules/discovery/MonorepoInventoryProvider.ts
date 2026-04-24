@@ -16,7 +16,10 @@
 
 import * as fs from 'fs-extra';
 import * as path from 'path';
-import { ServiceInventoryProvider, DiscoveredService } from '../../lib/providers';
+import {
+  ServiceInventoryProvider,
+  DiscoveredService,
+} from '../../lib/providers';
 import {
   detectLanguage,
   detectEntrypoint,
@@ -38,6 +41,28 @@ const LIB_PATTERNS = [
   'dto',
   'mbg',
   'generator',
+  // API-spec / contract directories — not runnable services
+  'openapi',
+  'swagger',
+  'proto',
+  'protos',
+  'grpc',
+  'graphql',
+  'schema',
+  'schemas',
+  // Example / tutorial / analysis directories — not deployable microservices
+  'quickstart',
+  'sample',
+  'samples',
+  'example',
+  'examples',
+  'tutorial',
+  'analysis',
+  'benchmark',
+  'scripts',
+  'tools',
+  'docs',
+  'documentation',
 ];
 
 function isSharedLibOrInfra(name: string, infraPatterns: string[]): boolean {
@@ -51,7 +76,12 @@ function isSharedLibOrInfra(name: string, infraPatterns: string[]): boolean {
 async function findDockerfile(
   dir: string,
 ): Promise<{ found: boolean; name: string }> {
-  for (const name of ['Dockerfile', 'dockerfile', 'DockerFile', 'Dockerfile.dev']) {
+  for (const name of [
+    'Dockerfile',
+    'dockerfile',
+    'DockerFile',
+    'Dockerfile.dev',
+  ]) {
     if (await fs.pathExists(path.join(dir, name))) {
       return { found: true, name };
     }
@@ -145,7 +175,10 @@ export class MonorepoInventoryProvider implements ServiceInventoryProvider {
         if (allServices.has(relPath)) continue;
 
         const dockerfile = await findDockerfile(subPath);
-        const entrypoint = await detectEntrypoint(subPath, language as SupportedLanguage);
+        const entrypoint = await detectEntrypoint(
+          subPath,
+          language as SupportedLanguage,
+        );
 
         allServices.set(relPath, {
           name: subEntry.name,

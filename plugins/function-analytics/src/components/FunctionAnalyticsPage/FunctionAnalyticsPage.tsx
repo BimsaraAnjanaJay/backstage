@@ -15,13 +15,12 @@
  */
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { Page, Header, HeaderLabel, Content } from '@backstage/core-components';
 import {
-  Page,
-  Header,
-  HeaderLabel,
-  Content,
-} from '@backstage/core-components';
-import { useApi, discoveryApiRef, fetchApiRef } from '@backstage/core-plugin-api';
+  useApi,
+  discoveryApiRef,
+  fetchApiRef,
+} from '@backstage/core-plugin-api';
 import {
   Button,
   TextField,
@@ -52,12 +51,28 @@ import {
   CircularProgress,
   IconButton,
   TableSortLabel,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
 } from '@material-ui/core';
 import ExpandMoreIcon from '@material-ui/icons/ExpandMore';
-import { FunctionAnalyticsClient, RelocationResult, DiscoveredService, JobStatus } from '../../api/FunctionAnalyticsClient';
+import SettingsIcon from '@material-ui/icons/Settings';
+import {
+  FunctionAnalyticsClient,
+  RelocationResult,
+  DiscoveredService,
+  JobStatus,
+} from '../../api/FunctionAnalyticsClient';
 import { generateExplanation } from './explanations';
 
-const pipelineSteps = ['Cloning', 'Detecting', 'Deploying', 'Tracing', 'Analyzing'];
+const pipelineSteps = [
+  'Cloning',
+  'Detecting',
+  'Deploying',
+  'Tracing',
+  'Analyzing',
+];
 const statusToStepIndex: Record<string, number> = {
   cloning: 0,
   detecting: 1,
@@ -83,10 +98,17 @@ const getLanguageColor = (lang: string): string => {
   return colors[lang.toLowerCase()] || '#757575';
 };
 
-const getRecommendationBadge = (rec: string, suggestedService: string | null) => {
+const getRecommendationBadge = (
+  rec: string,
+  suggestedService: string | null,
+) => {
   switch (rec) {
     case 'relocate':
-      return { label: `Relocate \u2192 ${suggestedService || '?'}`, color: '#d32f2f', bg: '#ffebee' };
+      return {
+        label: `Relocate \u2192 ${suggestedService || '?'}`,
+        color: '#d32f2f',
+        bg: '#ffebee',
+      };
     case 'review':
       return { label: 'Review', color: '#f57c00', bg: '#fff3e0' };
     case 'extract':
@@ -128,7 +150,9 @@ export const FunctionAnalyticsPage = () => {
 
   // Step 2
   const [services, setServices] = useState<DiscoveredService[]>([]);
-  const [selectedServices, setSelectedServices] = useState<Set<string>>(new Set());
+  const [selectedServices, setSelectedServices] = useState<Set<string>>(
+    new Set(),
+  );
 
   // Step 3
   const [jobId, setJobId] = useState<string | null>(null);
@@ -136,18 +160,32 @@ export const FunctionAnalyticsPage = () => {
 
   // Step 4
   const [results, setResults] = useState<RelocationResult[]>([]);
+  const [tracingAvailable, setTracingAvailable] = useState<boolean>(true);
   const [sortField, setSortField] = useState<string>('priorityScore');
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc');
-  const [filterRecommendation, setFilterRecommendation] = useState<string>('all');
+  const [filterRecommendation, setFilterRecommendation] =
+    useState<string>('all');
   const [filterService, setFilterService] = useState<string>('all');
   const [filterRisk, setFilterRisk] = useState<string>('all');
   const [expandedRow, setExpandedRow] = useState<number | null>(null);
 
+  // Settings
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [externalCallThreshold, setExternalCallThreshold] = useState(0.65);
+  const [confidenceMargin, setConfidenceMargin] = useState(0.05);
+  const [thresholdInput, setThresholdInput] = useState('65');
+  const [marginInput, setMarginInput] = useState('5');
+
+  const [detectProgressMsg, setDetectProgressMsg] = useState<string>('');
+
   const handleDetectServices = useCallback(async () => {
     setDetecting(true);
     setDetectError(null);
+    setDetectProgressMsg('');
     try {
-      const result = await client.detectServices(repoUrl);
+      const result = await client.detectServices(repoUrl, msg =>
+        setDetectProgressMsg(msg),
+      );
       setRepoName(result.repoName);
       setServices(result.services);
       setSelectedServices(new Set(result.services.map(s => s.name)));
@@ -156,6 +194,7 @@ export const FunctionAnalyticsPage = () => {
       setDetectError(err instanceof Error ? err.message : 'Detection failed');
     } finally {
       setDetecting(false);
+      setDetectProgressMsg('');
     }
   }, [client, repoUrl]);
 
@@ -165,13 +204,23 @@ export const FunctionAnalyticsPage = () => {
         repoUrl,
         undefined,
         Array.from(selectedServices),
+        externalCallThreshold,
+        confidenceMargin,
       );
       setJobId(id);
       setActiveStep(2);
     } catch (err) {
-      setDetectError(err instanceof Error ? err.message : 'Failed to start analysis');
+      setDetectError(
+        err instanceof Error ? err.message : 'Failed to start analysis',
+      );
     }
-  }, [client, repoUrl, selectedServices]);
+  }, [
+    client,
+    repoUrl,
+    selectedServices,
+    externalCallThreshold,
+    confidenceMargin,
+  ]);
 
   // Poll job status
   useEffect(() => {
@@ -185,6 +234,7 @@ export const FunctionAnalyticsPage = () => {
         if (status.status === 'done' && status.result) {
           setResults(status.result.results);
           setServices(status.result.services);
+          setTracingAvailable(status.result.tracingAvailable !== false);
           setActiveStep(3);
         } else if (status.status === 'error') {
           // stay on step 2 showing error
@@ -204,7 +254,9 @@ export const FunctionAnalyticsPage = () => {
   const filteredAndSortedResults = useMemo(() => {
     let filtered = results;
     if (filterRecommendation !== 'all') {
-      filtered = filtered.filter(r => r.recommendation === filterRecommendation);
+      filtered = filtered.filter(
+        r => r.recommendation === filterRecommendation,
+      );
     }
     if (filterService !== 'all') {
       filtered = filtered.filter(r => r.currentService === filterService);
@@ -222,7 +274,14 @@ export const FunctionAnalyticsPage = () => {
       return 0;
     });
     return sorted;
-  }, [results, filterRecommendation, filterService, filterRisk, sortField, sortDirection]);
+  }, [
+    results,
+    filterRecommendation,
+    filterService,
+    filterRisk,
+    sortField,
+    sortDirection,
+  ]);
 
   const tableColumns = [
     { id: 'functionName', label: 'Function Name' },
@@ -238,8 +297,33 @@ export const FunctionAnalyticsPage = () => {
 
   return (
     <Page themeId="tool">
-      <Header title="Function Relocation Analytics" subtitle="Detect misplaced functions in microservice architectures">
+      <Header
+        title="Function Relocation Analytics"
+        subtitle="Detect misplaced functions in microservice architectures"
+      >
         <HeaderLabel label="Mode" value="Automated" />
+        <HeaderLabel
+          label="Threshold"
+          value={`${Math.round(externalCallThreshold * 100)}%`}
+        />
+        <HeaderLabel
+          label="Margin"
+          value={`${Math.round(confidenceMargin * 100)}%`}
+        />
+        <Tooltip title="Analysis Settings">
+          <IconButton
+            color="inherit"
+            onClick={() => {
+              setThresholdInput(
+                String(Math.round(externalCallThreshold * 100)),
+              );
+              setMarginInput(String(Math.round(confidenceMargin * 100)));
+              setSettingsOpen(true);
+            }}
+          >
+            <SettingsIcon />
+          </IconButton>
+        </Tooltip>
       </Header>
       <Content>
         {/* Top-level stepper showing 4 wizard steps */}
@@ -266,10 +350,16 @@ export const FunctionAnalyticsPage = () => {
                 Analyze a Microservice Repository
               </Typography>
               <Typography variant="body2" color="textSecondary" gutterBottom>
-                Paste a GitHub repository URL containing microservices. The plugin will automatically
-                detect services, deploy them, collect traces, and identify misplaced functions.
+                Paste a GitHub repository URL containing microservices. The
+                plugin will automatically detect services, deploy them, collect
+                traces, and identify misplaced functions.
               </Typography>
-              <Box display="flex" alignItems="center" mt={3} style={{ gap: 16 }}>
+              <Box
+                display="flex"
+                alignItems="center"
+                mt={3}
+                style={{ gap: 16 }}
+              >
                 <TextField
                   label="GitHub Repository URL"
                   placeholder="https://github.com/org/microservices-repo"
@@ -286,9 +376,20 @@ export const FunctionAnalyticsPage = () => {
                   disabled={detecting || !repoUrl.trim()}
                   style={{ minWidth: 180, height: 56 }}
                 >
-                  {detecting ? <CircularProgress size={24} /> : 'Detect Services'}
+                  {detecting ? (
+                    <CircularProgress size={24} />
+                  ) : (
+                    'Detect Services'
+                  )}
                 </Button>
               </Box>
+              {detecting && detectProgressMsg && (
+                <Box mt={2}>
+                  <Typography color="textSecondary" variant="body2">
+                    {detectProgressMsg}
+                  </Typography>
+                </Box>
+              )}
               {detectError && (
                 <Box mt={2}>
                   <Typography color="error">{detectError}</Typography>
@@ -303,13 +404,18 @@ export const FunctionAnalyticsPage = () => {
           <Box>
             <Card style={{ marginBottom: 16 }}>
               <CardContent>
-                <Box display="flex" justifyContent="space-between" alignItems="center">
+                <Box
+                  display="flex"
+                  justifyContent="space-between"
+                  alignItems="center"
+                >
                   <Box>
                     <Typography variant="h5" gutterBottom>
                       Detected Services
                     </Typography>
                     <Typography variant="body2" color="textSecondary">
-                      Found {services.length} services in {repoName}. Select the services to include in the analysis.
+                      Found {services.length} services in {repoName}. Select the
+                      services to include in the analysis.
                     </Typography>
                   </Box>
                   <Box display="flex" style={{ gap: 8 }}>
@@ -322,7 +428,9 @@ export const FunctionAnalyticsPage = () => {
                           checked={selectedServices.size === services.length}
                           onChange={e => {
                             if (e.target.checked) {
-                              setSelectedServices(new Set(services.map(s => s.name)));
+                              setSelectedServices(
+                                new Set(services.map(s => s.name)),
+                              );
                             } else {
                               setSelectedServices(new Set());
                             }
@@ -336,7 +444,8 @@ export const FunctionAnalyticsPage = () => {
                 {selectedServices.size < 2 && (
                   <Box mt={1}>
                     <Typography variant="body2" style={{ color: '#f57c00' }}>
-                      Select at least 2 services for meaningful cross-service analysis.
+                      Select at least 2 services for meaningful cross-service
+                      analysis.
                     </Typography>
                   </Box>
                 )}
@@ -348,7 +457,9 @@ export const FunctionAnalyticsPage = () => {
                 <Grid item xs={12} sm={6} md={4} key={svc.name}>
                   <Card
                     style={{
-                      border: selectedServices.has(svc.name) ? '2px solid #1976d2' : '1px solid #e0e0e0',
+                      border: selectedServices.has(svc.name)
+                        ? '2px solid #1976d2'
+                        : '1px solid #e0e0e0',
                       cursor: 'pointer',
                     }}
                     onClick={() => {
@@ -359,20 +470,47 @@ export const FunctionAnalyticsPage = () => {
                     }}
                   >
                     <CardContent>
-                      <Box display="flex" justifyContent="space-between" alignItems="center">
+                      <Box
+                        display="flex"
+                        justifyContent="space-between"
+                        alignItems="center"
+                      >
                         <Typography variant="h6">{svc.name}</Typography>
-                        <Checkbox checked={selectedServices.has(svc.name)} color="primary" />
+                        <Checkbox
+                          checked={selectedServices.has(svc.name)}
+                          color="primary"
+                        />
                       </Box>
                       <Box display="flex" style={{ gap: 8 }} mt={1}>
                         <Chip
                           label={svc.language.toUpperCase()}
                           size="small"
-                          style={{ backgroundColor: getLanguageColor(svc.language), color: '#fff' }}
+                          style={{
+                            backgroundColor: getLanguageColor(svc.language),
+                            color: '#fff',
+                          }}
                         />
-                        {svc.port > 0 && <Chip label={`Port ${svc.port}`} size="small" variant="outlined" />}
-                        {svc.hasDockerfile && <Chip label="Dockerfile" size="small" variant="outlined" color="primary" />}
+                        {svc.port > 0 && (
+                          <Chip
+                            label={`Port ${svc.port}`}
+                            size="small"
+                            variant="outlined"
+                          />
+                        )}
+                        {svc.hasDockerfile && (
+                          <Chip
+                            label="Dockerfile"
+                            size="small"
+                            variant="outlined"
+                            color="primary"
+                          />
+                        )}
                       </Box>
-                      <Typography variant="caption" color="textSecondary" style={{ marginTop: 8, display: 'block' }}>
+                      <Typography
+                        variant="caption"
+                        color="textSecondary"
+                        style={{ marginTop: 8, display: 'block' }}
+                      >
                         {svc.path}
                       </Typography>
                     </CardContent>
@@ -404,7 +542,12 @@ export const FunctionAnalyticsPage = () => {
                 Analysis in Progress
               </Typography>
               <Box mt={2} mb={3}>
-                <Stepper activeStep={jobStatus ? statusToStepIndex[jobStatus.status] ?? 0 : 0} alternativeLabel>
+                <Stepper
+                  activeStep={
+                    jobStatus ? statusToStepIndex[jobStatus.status] ?? 0 : 0
+                  }
+                  alternativeLabel
+                >
                   {pipelineSteps.map(label => (
                     <Step key={label}>
                       <StepLabel>{label}</StepLabel>
@@ -428,30 +571,51 @@ export const FunctionAnalyticsPage = () => {
                 </Box>
               </Box>
               {jobStatus?.status === 'error' && (
-                <Box mt={2} p={2} style={{ backgroundColor: '#ffebee', borderRadius: 4 }}>
+                <Box
+                  mt={2}
+                  p={2}
+                  style={{ backgroundColor: '#ffebee', borderRadius: 4 }}
+                >
                   <Typography color="error" variant="body1">
                     Error: {jobStatus.error}
                   </Typography>
-                  <Button variant="outlined" onClick={() => setActiveStep(0)} style={{ marginTop: 8 }}>
+                  <Button
+                    variant="outlined"
+                    onClick={() => setActiveStep(0)}
+                    style={{ marginTop: 8 }}
+                  >
                     Try Again
                   </Button>
                 </Box>
               )}
               <Paper
                 variant="outlined"
-                style={{ maxHeight: 300, overflow: 'auto', padding: 16, backgroundColor: '#1e1e1e', marginTop: 16 }}
+                style={{
+                  maxHeight: 300,
+                  overflow: 'auto',
+                  padding: 16,
+                  backgroundColor: '#1e1e1e',
+                  marginTop: 16,
+                }}
               >
                 {(jobStatus?.logs || []).map((log, i) => (
                   <Typography
                     key={i}
                     variant="body2"
-                    style={{ fontFamily: 'monospace', color: '#d4d4d4', fontSize: '0.8rem' }}
+                    style={{
+                      fontFamily: 'monospace',
+                      color: '#d4d4d4',
+                      fontSize: '0.8rem',
+                    }}
                   >
                     {log}
                   </Typography>
                 ))}
                 {(!jobStatus?.logs || jobStatus.logs.length === 0) && (
-                  <Typography variant="body2" style={{ fontFamily: 'monospace', color: '#666' }}>
+                  <Typography
+                    variant="body2"
+                    style={{ fontFamily: 'monospace', color: '#666' }}
+                  >
                     Waiting for logs...
                   </Typography>
                 )}
@@ -472,7 +636,9 @@ export const FunctionAnalyticsPage = () => {
                       {results.length}
                     </Typography>
                     <Typography variant="body2" color="textSecondary">
-                      Functions analyzed across {new Set(results.map(r => r.currentService)).size} services
+                      Functions analyzed across{' '}
+                      {new Set(results.map(r => r.currentService)).size}{' '}
+                      services
                     </Typography>
                   </CardContent>
                 </Card>
@@ -496,7 +662,10 @@ export const FunctionAnalyticsPage = () => {
                       {Math.round(
                         results
                           .filter(r => r.recommendation === 'relocate')
-                          .reduce((s, r) => s + r.predictedLatencyImprovement, 0),
+                          .reduce(
+                            (s, r) => s + r.predictedLatencyImprovement,
+                            0,
+                          ),
                       )}
                       ms
                     </Typography>
@@ -511,11 +680,17 @@ export const FunctionAnalyticsPage = () => {
             {/* Filter Bar */}
             <Paper style={{ padding: 16, marginBottom: 16 }}>
               <Box display="flex" style={{ gap: 16 }} alignItems="center">
-                <FormControl variant="outlined" size="small" style={{ minWidth: 160 }}>
+                <FormControl
+                  variant="outlined"
+                  size="small"
+                  style={{ minWidth: 160 }}
+                >
                   <InputLabel>Recommendation</InputLabel>
                   <Select
                     value={filterRecommendation}
-                    onChange={e => setFilterRecommendation(e.target.value as string)}
+                    onChange={e =>
+                      setFilterRecommendation(e.target.value as string)
+                    }
                     label="Recommendation"
                   >
                     <MenuItem value="all">All</MenuItem>
@@ -525,7 +700,11 @@ export const FunctionAnalyticsPage = () => {
                     <MenuItem value="keep">Well Placed</MenuItem>
                   </Select>
                 </FormControl>
-                <FormControl variant="outlined" size="small" style={{ minWidth: 160 }}>
+                <FormControl
+                  variant="outlined"
+                  size="small"
+                  style={{ minWidth: 160 }}
+                >
                   <InputLabel>Service</InputLabel>
                   <Select
                     value={filterService}
@@ -542,7 +721,11 @@ export const FunctionAnalyticsPage = () => {
                       ))}
                   </Select>
                 </FormControl>
-                <FormControl variant="outlined" size="small" style={{ minWidth: 120 }}>
+                <FormControl
+                  variant="outlined"
+                  size="small"
+                  style={{ minWidth: 120 }}
+                >
                   <InputLabel>Risk</InputLabel>
                   <Select
                     value={filterRisk}
@@ -556,10 +739,19 @@ export const FunctionAnalyticsPage = () => {
                     <MenuItem value="NONE">None</MenuItem>
                   </Select>
                 </FormControl>
-                <Typography variant="body2" color="textSecondary" style={{ marginLeft: 'auto' }}>
-                  Showing {filteredAndSortedResults.length} of {results.length} functions
+                <Typography
+                  variant="body2"
+                  color="textSecondary"
+                  style={{ marginLeft: 'auto' }}
+                >
+                  Showing {filteredAndSortedResults.length} of {results.length}{' '}
+                  functions
                 </Typography>
-                <Button variant="outlined" size="small" onClick={() => setActiveStep(0)}>
+                <Button
+                  variant="outlined"
+                  size="small"
+                  onClick={() => setActiveStep(0)}
+                >
                   New Analysis
                 </Button>
               </Box>
@@ -570,14 +762,22 @@ export const FunctionAnalyticsPage = () => {
               <Table size="small">
                 <TableHead>
                   <TableRow style={{ backgroundColor: '#1976d2' }}>
-                    <TableCell style={{ color: '#fff', fontWeight: 'bold', width: 40 }} />
+                    <TableCell
+                      style={{ color: '#fff', fontWeight: 'bold', width: 40 }}
+                    />
                     {tableColumns.map(col => (
                       <TableCell
                         key={col.id}
-                        style={{ color: '#fff', fontWeight: 'bold', cursor: 'pointer' }}
+                        style={{
+                          color: '#fff',
+                          fontWeight: 'bold',
+                          cursor: 'pointer',
+                        }}
                         onClick={() => {
                           if (sortField === col.id) {
-                            setSortDirection(d => (d === 'asc' ? 'desc' : 'asc'));
+                            setSortDirection(d =>
+                              d === 'asc' ? 'desc' : 'asc',
+                            );
                           } else {
                             setSortField(col.id);
                             setSortDirection('desc');
@@ -586,7 +786,9 @@ export const FunctionAnalyticsPage = () => {
                       >
                         <TableSortLabel
                           active={sortField === col.id}
-                          direction={sortField === col.id ? sortDirection : 'asc'}
+                          direction={
+                            sortField === col.id ? sortDirection : 'asc'
+                          }
                           style={{ color: '#fff' }}
                         >
                           {col.label}
@@ -597,7 +799,10 @@ export const FunctionAnalyticsPage = () => {
                 </TableHead>
                 <TableBody>
                   {filteredAndSortedResults.map((result, index) => {
-                    const badge = getRecommendationBadge(result.recommendation, result.suggestedService);
+                    const badge = getRecommendationBadge(
+                      result.recommendation,
+                      result.suggestedService,
+                    );
                     const confidencePct = Math.round(result.confidence * 100);
                     const isExpanded = expandedRow === index;
 
@@ -606,20 +811,27 @@ export const FunctionAnalyticsPage = () => {
                         <TableRow
                           hover
                           style={{ cursor: 'pointer' }}
-                          onClick={() => setExpandedRow(isExpanded ? null : index)}
+                          onClick={() =>
+                            setExpandedRow(isExpanded ? null : index)
+                          }
                         >
                           <TableCell>
                             <IconButton size="small">
                               <ExpandMoreIcon
                                 style={{
-                                  transform: isExpanded ? 'rotate(180deg)' : 'none',
+                                  transform: isExpanded
+                                    ? 'rotate(180deg)'
+                                    : 'none',
                                   transition: '0.2s',
                                 }}
                               />
                             </IconButton>
                           </TableCell>
                           <TableCell>
-                            <Typography variant="body2" style={{ fontWeight: 500 }}>
+                            <Typography
+                              variant="body2"
+                              style={{ fontWeight: 500 }}
+                            >
                               {result.functionName}
                             </Typography>
                           </TableCell>
@@ -653,18 +865,30 @@ export const FunctionAnalyticsPage = () => {
                           </TableCell>
                           <TableCell>
                             {result.suggestedService ||
-                              (result.recommendation === 'extract' ? '(shared service)' : '\u2014')}
+                              (result.recommendation === 'extract'
+                                ? '(shared service)'
+                                : '\u2014')}
                           </TableCell>
                           <TableCell>
-                            <Box display="flex" alignItems="center" style={{ gap: 4 }}>
+                            <Box
+                              display="flex"
+                              alignItems="center"
+                              style={{ gap: 4 }}
+                            >
                               <LinearProgress
                                 variant="determinate"
                                 value={confidencePct}
-                                style={{ width: 60, height: 6, borderRadius: 3 }}
+                                style={{
+                                  width: 60,
+                                  height: 6,
+                                  borderRadius: 3,
+                                }}
                               />
                               <Typography
                                 variant="caption"
-                                color={confidencePct < 50 ? 'error' : 'textSecondary'}
+                                color={
+                                  confidencePct < 50 ? 'error' : 'textSecondary'
+                                }
                               >
                                 {confidencePct}%
                               </Typography>
@@ -672,12 +896,21 @@ export const FunctionAnalyticsPage = () => {
                           </TableCell>
                           <TableCell>
                             {result.predictedLatencyImprovement > 0
-                              ? `${result.predictedLatencyImprovement.toFixed(1)}ms`
+                              ? `${result.predictedLatencyImprovement.toFixed(
+                                  1,
+                                )}ms`
                               : '\u2014'}
                           </TableCell>
                           <TableCell>
-                            <Tooltip title={`Priority: ${(result.priorityScore * 100).toFixed(0)}%`}>
-                              <Typography variant="body2" style={{ fontWeight: 'bold' }}>
+                            <Tooltip
+                              title={`Priority: ${(
+                                result.priorityScore * 100
+                              ).toFixed(0)}%`}
+                            >
+                              <Typography
+                                variant="body2"
+                                style={{ fontWeight: 'bold' }}
+                              >
                                 {result.priorityScore.toFixed(3)}
                               </Typography>
                             </Tooltip>
@@ -687,7 +920,13 @@ export const FunctionAnalyticsPage = () => {
                         {/* Expanded detail panel */}
                         {isExpanded && (
                           <TableRow>
-                            <TableCell colSpan={10} style={{ backgroundColor: '#fafafa', padding: 24 }}>
+                            <TableCell
+                              colSpan={10}
+                              style={{
+                                backgroundColor: '#fafafa',
+                                padding: 24,
+                              }}
+                            >
                               <Grid container spacing={3}>
                                 <Grid item xs={12} md={6}>
                                   <Typography variant="subtitle2" gutterBottom>
@@ -695,7 +934,9 @@ export const FunctionAnalyticsPage = () => {
                                   </Typography>
                                   {result.codeLocation ? (
                                     <Box>
-                                      <Typography variant="body2">File: {result.codeLocation.file}</Typography>
+                                      <Typography variant="body2">
+                                        File: {result.codeLocation.file}
+                                      </Typography>
                                       {result.codeLocation.className && (
                                         <Typography variant="body2">
                                           Class: {result.codeLocation.className}
@@ -708,16 +949,26 @@ export const FunctionAnalyticsPage = () => {
                                       )}
                                     </Box>
                                   ) : (
-                                    <Typography variant="body2" color="textSecondary">
+                                    <Typography
+                                      variant="body2"
+                                      color="textSecondary"
+                                    >
                                       Not available
                                     </Typography>
                                   )}
 
                                   <Box mt={2}>
-                                    <Typography variant="subtitle2" gutterBottom>
+                                    <Typography
+                                      variant="subtitle2"
+                                      gutterBottom
+                                    >
                                       Call Breakdown
                                     </Typography>
-                                    <Box display="flex" alignItems="center" style={{ gap: 8 }}>
+                                    <Box
+                                      display="flex"
+                                      alignItems="center"
+                                      style={{ gap: 8 }}
+                                    >
                                       <Box
                                         style={{
                                           flex: result.internalCalls,
@@ -737,9 +988,17 @@ export const FunctionAnalyticsPage = () => {
                                         }}
                                       />
                                     </Box>
-                                    <Box display="flex" justifyContent="space-between" mt={0.5}>
-                                      <Typography variant="caption">Internal: {result.internalCalls}</Typography>
-                                      <Typography variant="caption">External: {result.externalCalls}</Typography>
+                                    <Box
+                                      display="flex"
+                                      justifyContent="space-between"
+                                      mt={0.5}
+                                    >
+                                      <Typography variant="caption">
+                                        Internal: {result.internalCalls}
+                                      </Typography>
+                                      <Typography variant="caption">
+                                        External: {result.externalCalls}
+                                      </Typography>
                                     </Box>
                                   </Box>
                                 </Grid>
@@ -748,28 +1007,35 @@ export const FunctionAnalyticsPage = () => {
                                     Metrics
                                   </Typography>
                                   <Typography variant="body2">
-                                    Cohesion Delta: {result.cohesionDelta > 0 ? '+' : ''}
+                                    Cohesion Delta:{' '}
+                                    {result.cohesionDelta > 0 ? '+' : ''}
                                     {result.cohesionDelta.toFixed(3)}
                                   </Typography>
                                   <Typography variant="body2">
-                                    Pattern Stability: {(result.patternStability * 100).toFixed(0)}%
+                                    Pattern Stability:{' '}
+                                    {(result.patternStability * 100).toFixed(0)}
+                                    %
                                   </Typography>
-                                  <Typography variant="body2">Static Coverage: {result.staticCoverage}</Typography>
-                                  {result.coLocationGroup && result.coLocationGroup.length > 0 && (
-                                    <Box mt={1}>
-                                      <Typography variant="body2">
-                                        Co-located with: {result.coLocationGroup.join(', ')}
-                                      </Typography>
-                                      {result.coLocationAction && (
-                                        <Chip
-                                          label={result.coLocationAction}
-                                          size="small"
-                                          variant="outlined"
-                                          style={{ marginTop: 4 }}
-                                        />
-                                      )}
-                                    </Box>
-                                  )}
+                                  <Typography variant="body2">
+                                    Static Coverage: {result.staticCoverage}
+                                  </Typography>
+                                  {result.coLocationGroup &&
+                                    result.coLocationGroup.length > 0 && (
+                                      <Box mt={1}>
+                                        <Typography variant="body2">
+                                          Co-located with:{' '}
+                                          {result.coLocationGroup.join(', ')}
+                                        </Typography>
+                                        {result.coLocationAction && (
+                                          <Chip
+                                            label={result.coLocationAction}
+                                            size="small"
+                                            variant="outlined"
+                                            style={{ marginTop: 4 }}
+                                          />
+                                        )}
+                                      </Box>
+                                    )}
 
                                   <Box
                                     mt={2}
@@ -780,10 +1046,15 @@ export const FunctionAnalyticsPage = () => {
                                       borderLeft: '4px solid #4caf50',
                                     }}
                                   >
-                                    <Typography variant="subtitle2" gutterBottom>
+                                    <Typography
+                                      variant="subtitle2"
+                                      gutterBottom
+                                    >
                                       Analysis
                                     </Typography>
-                                    <Typography variant="body2">{generateExplanation(result)}</Typography>
+                                    <Typography variant="body2">
+                                      {generateExplanation(result)}
+                                    </Typography>
                                   </Box>
                                 </Grid>
                               </Grid>
@@ -795,7 +1066,10 @@ export const FunctionAnalyticsPage = () => {
                   })}
                   {filteredAndSortedResults.length === 0 && (
                     <TableRow>
-                      <TableCell colSpan={10} style={{ textAlign: 'center', padding: 40 }}>
+                      <TableCell
+                        colSpan={10}
+                        style={{ textAlign: 'center', padding: 40 }}
+                      >
                         <Typography color="textSecondary">
                           {results.length === 0
                             ? 'No analysis results yet. Start by entering a repository URL above.'
@@ -809,6 +1083,62 @@ export const FunctionAnalyticsPage = () => {
             </TableContainer>
           </Box>
         )}
+        {/* Settings Dialog */}
+        <Dialog
+          open={settingsOpen}
+          onClose={() => setSettingsOpen(false)}
+          maxWidth="xs"
+          fullWidth
+        >
+          <DialogTitle>Analysis Settings</DialogTitle>
+          <DialogContent>
+            <Box
+              mt={1}
+              display="flex"
+              flexDirection="column"
+              style={{ gap: 20 }}
+            >
+              <TextField
+                label="External Call Threshold (%)"
+                type="number"
+                value={thresholdInput}
+                onChange={e => setThresholdInput(e.target.value)}
+                helperText="Functions with external ratio ≥ this value are candidates for relocation (0–100, default 65)"
+                inputProps={{ step: 1, min: 0, max: 100 }}
+                variant="outlined"
+                fullWidth
+              />
+              <TextField
+                label="Confidence Margin (%)"
+                type="number"
+                value={marginInput}
+                onChange={e => setMarginInput(e.target.value)}
+                helperText="Dominant caller must exceed internal ratio by at least this margin (0–50, default 5)"
+                inputProps={{ step: 1, min: 0, max: 50 }}
+                variant="outlined"
+                fullWidth
+              />
+            </Box>
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={() => setSettingsOpen(false)}>Cancel</Button>
+            <Button
+              color="primary"
+              variant="contained"
+              onClick={() => {
+                const t = parseFloat(thresholdInput);
+                const m = parseFloat(marginInput);
+                if (!isNaN(t) && t >= 0 && t <= 100)
+                  setExternalCallThreshold(t / 100);
+                if (!isNaN(m) && m >= 0 && m <= 50)
+                  setConfidenceMargin(m / 100);
+                setSettingsOpen(false);
+              }}
+            >
+              Apply
+            </Button>
+          </DialogActions>
+        </Dialog>
       </Content>
     </Page>
   );

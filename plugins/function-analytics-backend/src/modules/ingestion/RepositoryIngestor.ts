@@ -22,9 +22,22 @@ import { FraConfig } from '../config/FraConfig';
 
 /**
  * Extracts a filesystem-safe repo name from a Git URL or path.
- * Extracted verbatim from router.ts `extractRepoName()`.
+ *
+ * For GitHub URLs the org/owner is included to avoid collisions between
+ * identically-named repos from different organizations:
+ *   https://github.com/GoogleCloudPlatform/microservices-demo
+ *     → "googlecloudplatform--microservices-demo"
+ *
+ * For other URLs (local paths, non-GitHub hosts) just the repo segment is used
+ * as before.
  */
 export function extractRepoName(repoUrl: string): string {
+  const githubMatch = repoUrl.match(
+    /github\.com\/([^\/]+)\/([^\/]+?)(\.git)?$/i,
+  );
+  if (githubMatch) {
+    return `${githubMatch[1].toLowerCase()}--${githubMatch[2]}`;
+  }
   const match = repoUrl.match(/\/([^\/]+?)(\.git)?$/);
   return match ? match[1] : 'microservice';
 }
@@ -53,6 +66,17 @@ export async function ingestRepository(
       `Repository already exists at ${repoPath}, using existing copy`,
     );
     return repoPath;
+  }
+
+  // Backward-compat: if the org-qualified path doesn't exist but a bare repo
+  // name folder does, reuse it (repos cloned before org-prefix was added).
+  const bareRepoName = repoUrl.match(/\/([^\/]+?)(\.git)?$/)?.[1];
+  if (bareRepoName && bareRepoName !== repoName) {
+    const barePath = config.repoPath(bareRepoName);
+    if (await fs.pathExists(barePath)) {
+      logger.info(`Using existing bare-name folder ${barePath} for ${repoUrl}`);
+      return barePath;
+    }
   }
 
   const git = simpleGit();
