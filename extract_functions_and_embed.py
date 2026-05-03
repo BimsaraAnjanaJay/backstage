@@ -1,34 +1,5 @@
 """
 extract_functions_and_embed.py
-──────────────────────────────
-Pipeline (Phase 1):
-  Raw source code (Java / JS / Python)
-    → function-level extraction       (tree-sitter)
-    → DFG extraction per function     (tree-sitter DFG)
-    → Strategy A: line-based DFG slice
-        Keep only lines containing DFG variable nodes
-        + DFG_CONTEXT_LINES lines above/below for context.
-        Inspired by: srcClone (Alomari & Stephan, 2022)
-                     LLMxCPG  (Lekssays et al., 2025)
-    → GraphCodeBERT embeddings        (microsoft/graphcodebert-base)
-    → Cosine similarity clone report  (brute-force, HNSW added later)
-
-Fixes applied (v2):
-  Fix 1 — BPE-aware slicing trigger:
-      Raw token count is multiplied by BPE_EXPANSION_FACTOR (1.4) before
-      comparing to the token limit. This ensures functions that exceed the
-      model's 512-position budget after BPE sub-word expansion are sliced
-      BEFORE silent truncation occurs inside the model.
-  Fix 2 — Minimum stub token filter (MIN_STUB_TOKENS = 15):
-      Functions with fewer than 15 raw tokens are skipped entirely.
-      Single-line stubs produce [CLS]-dominated embeddings with near-zero
-      variance, causing artificially high cosine scores with all other stubs
-      (primary false-positive source in zero-shot mode).
-  Fix 3 — Raised CLONE_THRESHOLD from 0.80 → 0.90:
-      At 0.80 the zero-shot model flags structural similarity (same language,
-      same algorithmic shape) as clones. 0.90 is the empirically determined
-      lower bound for cross-language semantic clones in this corpus.
-
 Install:
     pip install transformers torch tree-sitter==0.20.4 tree-sitter-languages
 
@@ -53,25 +24,16 @@ EMBEDDINGS_FILE     = "embeddings.pkl"
 REPORT_FILE         = "clone_report.json"
 
 MODEL_NAME          = "microsoft/graphcodebert-base"
-LORA_ADAPTER_DIR    = "model"   # subdirectory containing the BCB fine-tuned adapter
-CODE_LENGTH         = 256    # official GraphCodeBERT value
-DATA_FLOW_LENGTH    = 64     # official GraphCodeBERT value
-CLONE_THRESHOLD     = 0.90   # cosine similarity threshold for clone detection
-                             # 0.90 chosen for zero-shot GraphCodeBERT:
-                             # below this, structural similarity (same language,
-                             # same algorithmic shape) dominates over semantics.
+LORA_ADAPTER_DIR    = "model"   
+CODE_LENGTH         = 256    
+DATA_FLOW_LENGTH    = 64     
+CLONE_THRESHOLD     = 0.90   
 
-# Strategy A config
-# Number of lines above and below each DFG line to keep as context.
-# 1 = keep immediate neighbours (recommended for first phase)
+
+
 DFG_CONTEXT_LINES   = 1
 
-# Minimum raw token count for a function to be included in the pipeline.
-# Single-line stub methods (e.g. `void send() { queue.add(msg); }`) produce
-# embeddings dominated by the [CLS] token with near-zero variance, causing
-# artificially high cosine similarity with all other short functions (false
-# positives). 15 raw tokens ≈ a 2–3 line function with at least one branch
-# or assignment — the smallest unit with meaningful DFG content.
+
 MIN_STUB_TOKENS     = 20
 
 IGNORE_DIRS = {
@@ -108,10 +70,7 @@ IGNORE_DIRS = {
     "codebert-base-local",
 }
 
-# Files to skip entirely — auto-generated, test harness, or non-business-logic.
-# Protobuf-generated *_pb2.py and *_pb2_grpc.py files contain only boilerplate
-# gRPC stubs; they are identical across services and produce thousands of
-# false-positive clone pairs.
+
 IGNORE_FILES = {
 }
 
@@ -124,8 +83,6 @@ EXTENSION_TO_LANG = {
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  PART 1 — FUNCTION EXTRACTION
-#  Uses tree-sitter to find every function/method in a source file
-#  and return its source text + location metadata.
 # ══════════════════════════════════════════════════════════════════════════════
 
 FUNCTION_NODE_TYPES = {
@@ -462,16 +419,6 @@ def extract_tokens_and_dfg(code: str, lang: str, parsers: dict):
 # ══════════════════════════════════════════════════════════════════════════════
 #  PART 3 — STRATEGY A: LINE-BASED DFG SLICE
 #
-#  Motivation (srcClone, Alomari & Stephan 2022):
-#    Program slicing produces a smaller, semantically equivalent
-#    representation of a function by keeping only the code elements
-#    that affect the variables of interest.
-#
-#  Our adaptation for clone detection:
-#    Criterion = lines containing DFG variable definition/use nodes.
-#    These are the lines that define the function's LOGIC.
-#    Lines with only logging, comments, or boilerplate have no DFG
-#    nodes and are removed.
 #
 #  Steps:
 #    1. Map each DFG token index → source line number
@@ -498,12 +445,6 @@ def strategy_a_slice(code: str, dfg: list,
     n_lines    = len(code_lines)
     n_tokens   = len(code_tokens)
 
-    # ── Case: no DFG or already within token limit ─────────────────
-    # BPE-aware trigger: GraphCodeBERT's BPE tokenizer expands raw tokens
-    # (e.g. camelCase identifiers split into multiple sub-words). Empirically,
-    # BPE output is ~1.4× the raw token count. We apply this multiplier so
-    # that functions which would exceed the model's 512-position limit after
-    # BPE expansion are sliced BEFORE silent truncation occurs inside the model.
     token_limit = CODE_LENGTH + DATA_FLOW_LENGTH
     BPE_EXPANSION_FACTOR = 1.4
     if not dfg or (n_tokens * BPE_EXPANSION_FACTOR) <= token_limit:
@@ -601,25 +542,15 @@ def resolve_lora_adapter_dir(adapter_dir: str | None = None):
     """
     Return a directory that looks like a PEFT LoRA checkpoint, or None.
 
-    We prefer the Hugging Face PEFT format:
-      - adapter_config.json
-      - adapter_model.safetensors (or adapter_model.bin)
-
-    Search order:
-      1. Explicit adapter_dir argument
-      2. LORA_ADAPTER_DIR config value (default: "model" subdir)
-      3. <script_dir>/model/            ← preferred: BCB fine-tuned checkpoint
-      4. Current working directory
-      5. Script directory (fallback to any adapter found nearby)
     """
     script_dir = os.path.dirname(os.path.abspath(__file__))
 
     candidates = []
     if adapter_dir:
         candidates.append(adapter_dir)
-        # Also try an explicit adapter_dir/model sub-path in case caller passes root
+      
         candidates.append(os.path.join(adapter_dir, "model"))
-    # Resolve LORA_ADAPTER_DIR as a relative path from script dir
+
     lora_rel = os.path.join(script_dir, LORA_ADAPTER_DIR)
     candidates.extend([
         lora_rel,
@@ -652,17 +583,6 @@ def load_graphcodebert_model(adapter_dir: str | None = None):
     """
     Load GraphCodeBERT for embeddings, optionally with a local LoRA adapter.
 
-    Architecture note:
-      The BCB fine-tuned LoRA adapter was trained with RobertaModel as the
-      base (task_type=FEATURE_EXTRACTION), NOT RobertaForSequenceClassification.
-      Keys in adapter_model.safetensors are keyed as:
-          base_model.model.encoder.layer.X.attention.self.{query,value}.lora_*
-      Loading into RobertaForSequenceClassification produces a path mismatch
-      (.roberta.encoder vs .encoder) so the adapter weights are never applied.
-      We therefore load the plain RobertaModel to match training exactly.
-
-    For function embeddings we extract the [CLS] hidden state — the same
-    representation used during training to compute clone similarity.
     """
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
     # Use plain RobertaModel — matches the training architecture exactly
@@ -691,17 +611,8 @@ def get_encoder_hidden_states(model, input_ids, position_ids, attention_mask):
     """
     Return token hidden states from the GraphCodeBERT encoder regardless of
     whether we loaded the plain RobertaModel or a LoRA-wrapped PeftModel.
-
-    With base = RobertaModel (BCB training architecture):
-      - PeftModel delegates __getattr__ to RobertaModel, which has no .roberta
-      - We call model() directly; RobertaModel returns BaseModelOutput with
-        .last_hidden_state → (batch, seq_len, hidden_size)
-
-    With base = RobertaForSequenceClassification (legacy fallback):
-      - model.roberta resolves to the inner RobertaModel via __getattr__
-      - We call roberta() directly to skip the classification head
     """
-    # Try .roberta sub-model (RobertaForSequenceClassification path)
+
     roberta = getattr(model, "roberta", None)
     if roberta is not None and callable(roberta):
         return roberta(
@@ -710,7 +621,6 @@ def get_encoder_hidden_states(model, input_ids, position_ids, attention_mask):
             attention_mask=attention_mask,
         )[0]
 
-    # Direct call — works for PeftModel(RobertaModel) and plain RobertaModel
     out = model(
         input_ids=input_ids,
         position_ids=position_ids,
@@ -718,7 +628,7 @@ def get_encoder_hidden_states(model, input_ids, position_ids, attention_mask):
     )
     if hasattr(out, "last_hidden_state"):
         return out.last_hidden_state
-    # Final fallback: out is a tuple, first element is last_hidden_state
+
     return out[0]
 
 
@@ -968,11 +878,7 @@ def main():
                     fcode, lang, parsers)
 
                 # ── Fix 2: skip trivial stub functions ─────────────────────
-                # Functions under MIN_STUB_TOKENS raw tokens are single-line
-                # stubs whose embeddings have near-zero variance (dominated by
-                # the [CLS] token), causing high cosine similarity with every
-                # other stub regardless of intent — a primary source of false
-                # positives in zero-shot GraphCodeBERT.
+  
                 if len(tokens_raw) < MIN_STUB_TOKENS:
                     print(f"    [SKIP stub] {fname}()"
                           f"  lines {fstart}-{fend}"

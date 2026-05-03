@@ -1,14 +1,5 @@
 """
 clone_api.py  —  GraphCodeBERT Clone Detection REST API
-========================================================
-Minimal corrected version:
-- Keeps original FAISS/HNSW + cache logic
-- Keeps original similarity logic
-- Keeps original MIN_STUB_TOKENS from extract_functions_and_embed.py
-- Keeps original IGNORE_FILES from extract_functions_and_embed.py
-- Adds ONLY extra real-world file skipping to avoid unnecessary comparisons
-- No exact-duplicate stage
-- No extra clone-counting logic
 """
 
 import os
@@ -67,26 +58,42 @@ PIPELINE_VERSION = "v4_minimal_realworld_skip_only"
 # clone_api.py
 
 EXTRA_IGNORE_FILENAMES = {
-    # generated / stubs
+    # ── Generated code (always safe to skip) ─────────────────────
     "demo_pb2.py",
     "demo_pb2_grpc.py",
 
-    # client wrappers / harnesses
-    "ApiClient.java",
-    "RestClient.java",
+    # ── Pure re-export entry points (no logic, just imports) ──────
+    "index.js",
+    "index.ts",
+
+    # ── Pure logging setup (no DFG-worthy logic) ──────────────────
+    "logger.py",
+    "logger.js",
+    "logger.ts",
+    "Logger.java",
+    "logging.py",
+
+    # ── Pure constant declarations (no logic, just values) ────────
+    "constants.js",
+    "constants.ts",
+    "constants.py",
+    "Constants.java",
+
+    # ── Pure env variable reading (no logic) ──────────────────────
+    "environment.js",
+    "environment.ts",
 }
 
+# Pattern-based ignores (matched on filename only)
 EXTRA_IGNORE_PATTERNS = [
-    ".test.",
-    ".spec.",
-    ".mock.",
-    ".d.ts",
-    "migration",
-    "seed",
-    "__test__",
-    "test_",
+    ".test.",     # unit tests
+    ".spec.",     # spec tests
+    ".mock.",     # mock files
+    ".d.ts",      # TypeScript type definitions — no logic
+    "test_",      # Python test files (test_payment.py etc.)
 ]
 
+# Directory ignores
 EXTRA_IGNORE_DIRS_IN_PATH = {
     "dist",
     "build",
@@ -97,12 +104,8 @@ EXTRA_IGNORE_DIRS_IN_PATH = {
     "mocks",
     "fixtures",
     "migrations",
-    "seeds",
     "vendor",
-    "target",          # Java
-    ".idea",
-    ".gradle",
-    ".mvn",
+    "target",     # Java Maven build output
 }
 
 TOP_K = 10
@@ -202,7 +205,31 @@ def should_ignore_file(path: str) -> tuple[bool, str]:
     return False, ""
 
 
-# detect_shared_files removed for research purposes
+def detect_shared_files(services_input: list) -> set:
+    """
+    Skip files that are literally the same content across services.
+    This only removes unnecessary real-world duplicated boilerplate.
+    """
+    by_hash = defaultdict(list)
+
+    for svc_entry in services_input:
+        svc = svc_entry.get("service", "unknown")
+        for f in svc_entry.get("files", []):
+            path = f.get("path") or f.get("filename", "")
+            content = f.get("content", "")
+            file_hash = hashlib.sha256(normalize_text_for_hash(content).encode("utf-8")).hexdigest()
+            by_hash[file_hash].append((svc, path))
+
+    shared = set()
+    for file_hash, entries in by_hash.items():
+        services = {svc for svc, _ in entries}
+        if len(services) < 2:
+            continue
+        for svc, path in entries:
+            shared.add((svc, path))
+            log.info(f"  [SHARED FILE] {svc}/{path} identical across services — skipping")
+
+    return shared
 
 
 def embed_function(tokens, dfg):
@@ -309,7 +336,6 @@ def process_services(services_input: list, shared_files: set) -> tuple:
     for svc_entry in services_input:
         service_name = svc_entry.get("service", "unknown")
         files = svc_entry.get("files", [])
-        log.info(f"--- Handling Service: {service_name} ({len(files)} files) ---")
 
         content_hash = compute_service_content_hash(files)
 
@@ -553,8 +579,8 @@ def build_clone_report(records: list, indices: dict, threshold: float) -> dict:
             "pipeline_version": PIPELINE_VERSION,
         },
         "summary": {
-            "services_analysed": len(indices),
-            "service_names": list(indices.keys()),
+            "services_analysed": len(service_names),
+            "service_names": service_names,
             "functions_processed": len(records),
             "functions_sliced": sum(1 for r in records if r.get("sliced", False)),
             "cross_service_pairs": len(all_pairs),
@@ -673,8 +699,8 @@ def detect_clones():
     )
 
     try:
-        # shared_files = detect_shared_files(services_input)
-        records, indices = process_services(services_input, set())
+        shared_files = detect_shared_files(services_input)
+        records, indices = process_services(services_input, shared_files)
         report = build_clone_report(records, indices, threshold)
     except Exception as e:
         log.error(f"Pipeline error: {e}", exc_info=True)
@@ -682,10 +708,10 @@ def detect_clones():
 
     report["meta"] = {
         "processing_time_sec": round(time.time() - t0, 2),
+        "shared_files_skipped": len(shared_files),
     }
     log.info(
-        f"Done — {report['summary']['services_analysed']} service(s), "
-        f"{report['summary']['functions_processed']} function(s), "
+        f"Done — {report['summary']['functions_processed']} functions, "
         f"{report['summary']['clones_detected']} clone(s) "
         f"in {report['meta']['processing_time_sec']}s"
     )
